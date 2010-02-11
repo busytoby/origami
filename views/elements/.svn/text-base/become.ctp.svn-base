@@ -1,0 +1,8 @@
+<div class="become status">
+	<?php
+		if ($session->check('Admin.Unalias')) {
+			$adminAlias = $session->read('Admin.Unalias');
+			echo $html->link(__('Return to ' . $adminAlias['User']['email'], true), '/users/unbecome');
+		}
+	?>
+</div>

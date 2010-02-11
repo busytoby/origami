@@ -1,0 +1,299 @@
+<?php
+
+uses('controller' . DS . 'components' . DS . 'acl');
+
+/**
+ * Origami's ACL class... document me!
+ *
+ * @package default
+ **/
+
+class OrigamiAclComponent extends AclComponent {
+    var $permission_cache;
+    var $additional_acos;
+
+    /**
+     * Startup function. Sets up the User model and the Auth component as class variables.
+     *
+     * @return void
+     **/
+    function startup(&$controller) {
+        $this->Auth = $controller->Auth;
+
+        App::import('Model', 'User');
+        $this->User = new User;
+
+        $controller->set('OrigamiAcl', $this); // allow access to acl in views (mainly for hasPermission)
+
+        $permission_cache = array();
+    }
+
+    /**
+     * Primary authorization check. Called before every action via Auth. Also sets the proper redirect.
+     *
+     * Implements some rudimentary caching, mainly for the sake of views that call it via hasPermission
+     * during loops.
+     *
+     * @return bool
+     **/
+    function isAuthorized( $user, $controller, $action ) {
+        if ($controller == 'Users' && $action == 'login') return true; // I don't *think* this should ever happen.
+        if ($controller == 'Users' && $action == 'logout') return true; // I don't *think* this should ever happen.
+
+        if(isset($this->permission_cache[$user['User']['id']][$controller][$action]))
+            return $this->permission_cache[$user['User']['id']][$controller][$action];
+
+        $this->User->read(null, $user['User']['id']);
+
+        if (count($this->User->data['Role']) == 0 ) {
+            $this->permission_cache[$user['User']['id']][$controller][$action] = false;
+            return false;
+        }
+
+        foreach ($this->User->data['Role'] as $role ) {
+            if ($this->check(array('model' => 'Role', 'foreign_key' => $role['id']), $controller) ) {
+                $this->permission_cache[$user['User']['id']][$controller][$action] = true;
+                return true;
+            }
+            if ($this->check(array('model' => 'Role', 'foreign_key' => $role['id']), $controller.'/'.$action)) {
+                $this->permission_cache[$user['User']['id']][$controller][$action] = true;
+                return true;
+            }
+        }
+
+        $this->permission_cache[$user['User']['id']][$controller][$action] = false;
+        return false;
+    }
+
+    /**
+     * Convenience function that compares logged-in user against this::isAuthorized.
+     * Use inline to kindly hide inaccessible features.
+     * Returns false if not logged in. Probably a minor bug.
+     *
+     * <code>
+     * if ( $this->OrigamiAcl->hasPermission('User', 'delete') ) echo ' { delete link }';
+     * </code>
+     *
+     * @return bool
+     **/
+    function hasPermission($controller, $action = null) {
+        if($action == null) {
+            $action = $controller;
+            $controller = 'AdditionalPermissions';
+        }
+
+        $user = $this->Auth->user();
+
+        if ( !$user ) return false;
+
+        return $this->isAuthorized($user, $controller, $action);
+    }
+
+    /**
+     * Provides the "home" path for a given user
+     *
+     * @return string
+     **/
+    function redirect( $user ) {
+        $this->User->read(null, $user['User']['id']);
+
+        if (count($this->User->data['Role']) == 0 ) return '/my_account/';
+
+        foreach ($this->User->data['Role'] as $role ) {
+            if (!empty($role['home_path'])) return $role['home_path'];
+        }
+
+        return '/my_account/';
+    }
+
+    /**
+     * Allows $role_id to access the specified controller / action. Does not remove
+     * access from existing ACOs
+     *
+     * @param uuid Role ID
+     * @param string Controller name
+     * @param string Action name (optional, if not supplied, granted access to entire controller)
+     * @return void
+     **/
+    function allowRole($role_id, $controller, $action=null) {
+        $aco = new Aco();
+
+        if ( $action == null ) { // allow to entire controller
+            $this->createActionAco($controller);
+            $this->allow(array('model' => 'Role', 'foreign_key' => $role_id), $controller);
+
+        } else { // only allow to single action (note that this does not remove access from other actions)
+            $this->createActionAco($controller, $action);
+            $this->allow(array('model' => 'Role', 'foreign_key' => $role_id), $controller.'/'.$action);
+        }
+    }
+
+    /**
+     * Deletes all permissions to the specified role
+     *
+     * @return bool Success
+     **/
+    function denyRole($role_id) {
+        $aro = new Aro();
+        $aro_data = $aro->find(array('model' => 'Role', 'foreign_key' => $role_id));
+        return $aro->Permission->deleteAll(array('Aro.id' => $aro_data['Aro']['id']));
+    }
+
+    /**
+     * Creates an ACO entry for the specified controller / action
+     *
+     * @param string Controller name
+     * @param string Action name
+     * @return void
+     **/
+    function createActionAco($controller, $action = null) {
+        $aco = new Aco();
+        $aco_data = array('parent_id' => null, 'alias' => $controller);
+        $controller_aco = $aco->find('first', array('conditions' => $aco_data));
+
+        // create controller ACO if necessary
+        if ( !$controller_aco ) {
+            $aco->create();
+            $aco->save($aco_data);
+            $parent_id = $aco->getLastInsertID();
+        } else {
+            $parent_id = $controller_aco['Aco']['id'];
+        }
+
+        // create action ACO if necessary
+        if( $action != null ) {
+            $action_aco_data = array('parent_id' => $parent_id, 'alias' => $action);
+
+            if ( !$aco->find('first', array('conditions' => $action_aco_data)) ) {
+                $aco->create();
+                $aco->save($action_aco_data);
+            }
+        }
+    }
+
+    /**
+     * Get list of all controllers / actions + permission
+     *
+     * looks like:
+     * <code>
+     * array(
+     * 'Controller' => array('permitted' = true,
+     *      array('actions' => array('action' => true, 'action2' => false ),
+     * 'Controller2' = array(...)
+     * )
+     * </code>
+     *
+     * @param uuid Role ID, to populate array with permissions. If false, will still return a proper array.
+     * @return array Tree of controller -> action -> bool_permission
+     */
+    function getAcoTree( $role_id=null ) {
+        $aro = ($role_id) ? array('model' => 'Role', 'foreign_key' => $role_id) : null;
+
+        $permission_array = array();
+        foreach ( Configure::listObjects('controller') as $controller ) {
+            if ( $controller == 'App' ) continue;
+
+			$actions = $this->getActions($aro, $controller, CONTROLLERS);
+			
+            $permission_array[$controller] = array(
+                'permittedController' => ($aro && $this->check($aro, $controller)),
+                'actions' => $actions);
+        }
+
+<<<<<<< .mine
+        // overlay additional ACOs
+        $additional_acos = array();
+        foreach ($this->additional_acos as $aco) {
+            $additional_acos[$aco] = ($aro && $this->check($aro, 'AdditionalPermissions/'.$aco));
+        }
+
+        $permission_array = array_merge(array('AdditionalPermissions' => array(
+                                                  'actions' => $additional_acos,
+                                                  'permittedController' => false
+                                              )), $permission_array);
+=======
+        // We need get the controllers and methods from plugins also
+		foreach (Configure::listObjects('plugin') as $plugin) {
+			// Plugins require that their custom app controller is loaded
+			$plugin_app_controller = ROOT . DS . APP_DIR . DS . 'plugins' . DS . Inflector::underscore($plugin) . DS . Inflector::underscore($plugin . 'AppController') . '.php';
+			require_once($plugin_app_controller);
+
+			$path = ROOT . DS . APP_DIR . DS . 'plugins' . DS . Inflector::underscore($plugin) . DS . 'controllers' . DS;
+			// Make sure not to use cached object lists or we just get the controllers from the first listObjects call above
+			foreach (Configure::listObjects('controller', $path, false) as $pluginController) {
+	            if ( $pluginController == 'App' ) continue;
+	            
+				$actions = $this->getActions($aro, $pluginController, $path);
+				
+	            $permission_array[$pluginController] = array(
+	                'permittedController' => ($aro && $this->check($aro, $pluginController)),
+	                'actions' => $actions);
+			}
+		}
+        
+        // overlay additional ACOs
+        $additional_acos = array();
+        foreach ($this->additional_acos as $aco) {
+            $additional_acos[$aco] = ($aro && $this->check($aro, 'AdditionalPermissions/'.$aco));
+        }
+
+        $permission_array = array_merge(array('AdditionalPermissions' => array(
+                                                  'actions' => $additional_acos,
+                                                  'permittedController' => false
+                                              )), $permission_array);
+>>>>>>> .r16
+        return $permission_array;
+    }
+
+    /**
+     * Overloading of parent::check. Cake's built-in check() spits out warnings on check()
+     * if the ACO doesn't exist. For us, that simply means that the check is false.
+     *
+     * @param string $aro ARO
+     * @param string $aco ACO
+     * @param string $action Action (defaults to *)
+     * @return boolean Success (true if ARO has access to action in ACO, false otherwise)
+     * @access public
+     */
+    function check($aro, $aco, $action = "*") {
+        if ($aro == null || $aco == null) {
+            return false;
+        }
+
+        $aroPath = $this->Aro->node($aro);
+        $acoPath = $this->Aco->node($aco);
+
+        if (empty($aroPath) || empty($acoPath)) return false;
+        if ($acoPath == null || $acoPath == array()) return false;
+
+        return parent::check($aro, $aco, $action);
+    }
+
+    /*
+     * Get each of the actions available on a controller
+     * 
+     * @param array $aro ARO
+     * @param string $controller The name of the controller to get actions from
+     * @param string $controller_path The path where controller is located.
+     * @return array Array of actions and permissions for each action.
+     * @access public
+     */
+    function getActions($aro, $controller, $controller_path) {
+		$file_name = Inflector::underscore( $controller ) . '_controller.php';
+		require_once( $controller_path . $file_name );
+
+		$reflection = new ReflectionClass($controller.'Controller');
+
+		$actions = array();
+		foreach ( $reflection->getMethods() as $method ) {
+			if ( $method->isConstructor() || $method->isDestructor() ) continue;
+			if ( substr($method->getName(), 0, 1) == '_' ) continue;
+			if ( in_array($method->getName(), array('beforeFilter', 'afterFilter'))) continue;
+			if ( in_array($method->getDeclaringClass()->getName(), array('Object', 'Controller', 'AppController')) ) continue;
+
+			$actions[$method->getName()] = ($aro && $this->check($aro, $controller.'/'.$method->getName()));
+		}
+		
+		return $actions;
+    }
+}

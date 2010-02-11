@@ -1,0 +1,596 @@
+<?php
+class OrigamiImageComponent extends Object {
+
+    var $name = 'OrigamiImages';
+    var $uses = null;
+
+    /**
+     * Function examines pixel x,y in img and returns a 'brightness' value
+     * between 0-255
+     *
+     */
+    function __imagebrightnessat($img, $x, $y) {
+        $saturation = 161; // threshhold -- same as autocrop_sensitivity + 1... this should really be passed in
+        $pixel = $img->getImagePixelColor($x, $y);
+        $pixel_colors = $pixel->getColor();
+        $pixel_saturation = ($pixel_colors['r'] + $pixel_colors['b'] + $pixel_colors['g']) / 3;
+
+        return $pixel_saturation;
+    }
+
+    /**
+     * Function tests point x,y to see if it matches the criteria for a line
+     *
+     */
+    function __is_line($img, $x, $y, $line_width, $line_length, $sensitivity) {
+        /**
+         * test the point at x,y accept lines no wider than $line_width
+         * if appropriate
+         */
+        if ( ($this->__imagebrightnessat($img, $x, $y) < $sensitivity)) {
+            if (!$line_width ||
+                ($this->__imagebrightnessat($img, $x, $y + $line_width) >= $sensitivity) ) {
+                /**
+                 * Check line length and width if appropriate for rightmost endpoint
+                 */
+                if (!$line_length ||
+                    ( ($this->__imagebrightnessat($img, $x + $line_length, $y) < $sensitivity) &&
+                      ( !$line_width ||
+                        ($this->__imagebrightnessat($img, $x + $line_length, $y + $line_width) >= $sensitivity) )
+                    ) ) {
+                    return(true);
+                }
+            }
+        }
+        return(false);
+    }
+
+    /**
+     * Function tests coordinate ($x, $y) in $img for line continuity +- $delta pixels
+     */
+    function __test_line_segment($img, $x, $y, $target_saturation, $delta) {
+        for ($i = 1; $i < $delta; $i++) {
+            $sat_A = $this->__imagebrightnessat($img, $x+$i, $y);
+            $sat_B = $this->__imagebrightnessat($img, $x-$i, $y);
+            if ( $sat_A > $target_saturation || $sat_B > $target_saturation) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Function finds and returns the y coordinate of the first line of
+     * $line_width by $line_length below x,y and above x1,y1 in $img
+     */
+    function __next_box_line($img, $x, $y, $x1, $y1, $determine_width = 0) {
+        $line_location = $y;
+        $midpoint = floor(($x+$x1)/2);
+        $line_width = null;
+
+        // set initial bias point 75% towards the right boundary
+        $target = floor(($midpoint + ($x1 * 2)) / 3);
+
+        /**
+         * Test the expected line first
+         */
+        while($line_location < $y1) {
+            if ($this->__imagebrightnessat($img, $target, $line_location) < 250) {
+
+                // locate left-most line endpoint via binary search
+                if ($determine_width = 1) {
+                    $tolerance = 3; // only accept points as belonging to a line if they are at least 2*$tolerance + 1 pixels contiguous
+                    $left = $x;
+                    $right = $target;
+                    while($left < ($right - $tolerance)) {
+                        $target = floor(($left + $right) / 2);
+                        if($this->__test_line_segment($img, $target, $line_location, 250, $tolerance)) {
+                            $right = $target;
+                        } else {
+                            $left = $target;
+                        }
+                    }
+                }
+
+                return(array('y' => $line_location, 'x' => $target));
+            }
+            $line_location += 1;
+        }
+
+        // fail
+        return(0);
+    }
+
+
+    /**
+     * Function finds and returns the y coordinate of any line of
+     * $line_width by $line_length approximately $expected_distance pixels
+     * under point $x,$y in $img.
+     *
+     * The line will be searched for at
+     * ( $x, $y+$expected_distanceÃ¯Â¿Â½$fuzziness )
+     */
+    function __next_line($img, $x, $y, $line_width, $line_length, $expected_distance, $fuzziness = 6) {
+        $i = $y + $expected_distance; // storage register
+        $sensitivity_mod = 0.04; // accept shades up to 4% lighter
+        $line_location = 0;
+
+        // find a line no more white than the one we start on
+        $sensitivity = $this->__imagebrightnessat($img, $x, $y);
+
+        /**
+         * Test the expected line first
+         */
+        if ($this->__is_line($img, $x, $i, $line_width, $line_length, $sensitivity))
+            return $i;
+
+        if($fuzziness > 0) {
+            /**
+             * Test $fuzziness lines above and below the expected line
+             */
+            $expected_point = $y + $expected_distance;
+
+            for($i = 1; $i < $fuzziness; $i++) {
+                // test outwardly from $expected_distance.. ie: 1, -1, 2, -2, 3, -3, etc.
+                $test_point = $expected_point + $i;  // y coordinate to test for line
+
+                if ($this->__is_line($img, $x, $test_point, $line_width, $line_length, $sensitivity)) {
+                    return($test_point);
+                }
+
+                /**
+                 * if $expected_distance is non-positive  then we assume we are only
+                 * interested in looking downward.
+                 */
+                if ($expected_distance > 0) {
+                    $test_point = $expected_point - $i;  // y coordinate to test for line
+                    if ($this->__is_line($img, $x, $test_point, $line_width, $line_length, $sensitivity)) {
+                        return($test_point);
+                    }
+                }
+            }
+        }
+        return(0);
+    }
+
+    /**
+     * Function examines the area under pixel x,y in image and tries to locate
+     * the leftmost edge of any horizontal line.  Return value is an array
+     * containing x/y coordinates offset by the specified amount.
+     *
+     */
+    function __find_autocrop($img, $x, $y) {
+        $autocrop_fuzziness = 64;   // how far to look below $y for a line. 0-height($img)
+        $autocrop_sensitivity = 160;  // contrast sensitivity for line detection. 0-255
+        $line_width = 24; // average pixel width of lines in this document
+        $crop_offsetX = 4; // X offset for return coordinates
+        $crop_offsetY = 50; // Y offset for return coordinates
+        $altered = false; // whether or not we have modified the passed coords
+        $autocrop_x = 0; // autocrop marker pointers
+        $autocrop_y = 0;
+        $delta_x = 0;
+        $type = 'T'; // default field type is 'Text'
+
+        /**
+         * Search below $y for a horizontal line
+         */
+        $autocrop_y = $this->__next_line($img, $x, $y, $line_width, 0, 0, $autocrop_fuzziness);
+        /**
+         * Follow $x until we reach whitespace or a vertical line to detect endpoints
+         * Detect additional lines below the current and mark as multi-line input
+         * as appropriate.
+         */
+        if($autocrop_y > 0) {
+            $autocrop_x = $x;
+
+            /**
+             * Find leftmost endpoint
+             */
+            while ($this->__imagebrightnessat($img, $autocrop_x, $autocrop_y - $line_width) > $autocrop_sensitivity &&
+                   $this->__imagebrightnessat($img, --$autocrop_x, $autocrop_y) < $autocrop_sensitivity) {
+                continue;
+            }
+
+            $delta_x = $x - ++$autocrop_x;
+
+            /**
+             * Find rightmost endpoint and line length
+             */
+            while ($this->__imagebrightnessat($img, $autocrop_x + ++$delta_x, $autocrop_y - $line_width) > $autocrop_sensitivity &&
+                   $this->__imagebrightnessat($img, $autocrop_x + $delta_x, $autocrop_y) < $autocrop_sensitivity) {
+                continue;
+            }
+
+            /**
+             * if our bounding box is <= 18 pixels, we have a checkbox
+             */
+            if (--$delta_x <= 18) {
+                $type = 'C'; // 'Checkbox'
+            } elseif ($delta_x >= 500) {  // >=500 pixel line likely signifies more lines to follow
+                $line_distance = 0;
+                $num_lines = 1;
+
+                // look for another line below $autocrop_y
+                $next_line = $this->__next_line($img,
+                                                $autocrop_x,
+                                                $autocrop_y + $line_width,
+                                                $line_width,
+                                                $delta_x,
+                                                0,
+                                                $autocrop_fuzziness);
+
+                $line_distance = $next_line - $autocrop_y;
+                $last_line = $next_line;
+
+                // if we found a second line, we should search for more
+                while($line_distance > 0 && $next_line > 0) {
+                    $next_line = $this->__next_line($img,
+                                                    $autocrop_x,
+                                                    $last_line + $line_width,
+                                                    $line_width,
+                                                    $delta_x,
+                                                    $line_distance,
+                                                    32);
+                    $last_line = $next_line;
+                    $num_lines++;
+                }
+                if($num_lines > 1) {
+                    $type = 'L' . $num_lines; // 'multi-Line' input
+                }
+            }
+
+            // offset coordinates for checkbox display
+            if($type == 'C') {
+                $x = $autocrop_x;
+                $y = $autocrop_y - $crop_offsetY;
+            }
+
+            /**
+             * Offset coordinates for Text and multi-Line fields
+             */
+            if ($delta_x > 12) {
+                $x = $autocrop_x + $crop_offsetX;
+                $y = $autocrop_y - $crop_offsetY;
+            }
+        }
+
+        return array('x'=>$x, 'y'=>$y, 'type'=>$type, 'width'=>$delta_x);
+    }
+
+    /**
+     * Function wraps $Text with $pen into lines of at most $Width pixels
+     */
+    function __getWrappedLines($Text, $pen, $Width) {
+        $fontSize = $pen->getFontSize();
+        $fontWidth = ($fontSize / 1.87); // magic number works for Arial
+        $im = new Imagick();
+
+        // get the stats on our pen
+        $textWidth = strlen($Text) * $fontWidth;
+
+        if($textWidth <= $Width) { // everything fits on the line
+            return(array($Text));
+        } else { // otherwise, wrap text into multiple lines
+            $userLines = split("[\r\n]+", $Text);
+            $Lines = array();
+
+            foreach($userLines as $userLine) {
+                $Words = split("[\t ]+", $userLine);
+                $Line = '';
+
+                // add words to the line until we exceed $Width
+                foreach($Words as $Word) {
+                    $textWidth = strlen($Line . $Word) * $fontWidth;
+
+                    if($textWidth > $Width && strlen($Line) > 0) {
+                        $Lines[] = $Line;
+                        $Line = '';
+                    }
+
+                    $Line .= $Word . ' ';
+                }
+                $Lines[] = trim ( $Line );
+            }
+
+            return($Lines);
+        }
+    }
+
+
+    /**
+     * Function returns the leftmost coordinate pairs of all lines available for placing text within the
+     * box bounded by ($x, $y), ($x+$width, $y+$height) or false if the text does not fit.
+     */
+    function __getImageLines($img, $lines_needed, $x, $y, $width, $height) {
+        $lines = array();
+        $line_width = 8; // minimum height of line we are interested in detecting
+        $num_lines = 0;
+        $line_distance = 0;
+
+        $x1 = $x + $width;
+        $y1 = $y + $height;
+
+        // detect the nearest line
+        $next_box_line = $this->__next_box_line(
+            $img,
+            $x,
+            $y,
+            $x1,
+            $y1,
+            1);
+
+        $next_line = $next_box_line['y'];
+        $first_line_position = $next_box_line['x'];
+
+        $line_distance = $line_width * 2; // initial guess.  first line is probably >= 16px from top of box
+
+        // stay in bounds, don't be greedy, and don't grab regions that are too small
+        while( $next_line > $y &&
+               $next_line < $y1 &&
+               $num_lines < $lines_needed &&
+               $line_distance > $line_width ) {
+
+            $lines[] = $next_line;
+
+            $num_lines++;
+
+            //            debug(array($y, $y1, $lines, $next_line, $line_distance));
+
+            $next_box_line = $this->__next_box_line($img,
+                                                    $x,
+                                                    end($lines) + $line_distance,
+                                                    $x1,
+                                                    $y1);
+
+            $next_line = $next_box_line['y'];
+
+            $line_distance = floor(($next_line - end($lines)) / 1.5);
+        }
+        //        debug(array($lines_needed, $x, $y, $x1, $y1, $lines));
+        if(empty($lines) && $height > 32) {
+            for($next_line = $y + 32; $next_line < $y1; $next_line += 32) {
+                $lines[] = $next_line;
+            }
+        }
+
+        return(array('lines' => $lines, 'first_line_position' => $first_line_position));
+    }
+
+    /**
+     * Function writes $Text with $pen into a box on $img bounded by ($X, $Y), ($X + $Width, $Y + $Height)
+     */
+    function __imageWordWrap($img, $pen, $Text, $Width, $Height, $X = 0, $Y = 0) {
+        $baseFontSize = $newFontSize = $pen->getFontSize(); // we need to reset the pen before returning
+        $locX = $X;
+        $locY = $Y;
+        $overflow_text = "";
+
+        // handle checkboxes first
+        if($Height == 40) {
+            $offsetX = 10;
+            $offsetY = 40;
+            // Mark an 'X' in the box
+            $img->annotateImage($pen, $locX + $offsetX, $locY + $offsetY, 0, $Text);
+            return($overflow_text);
+        }
+
+        $autocrop_fuzziness = 64;   // how far to look below $y for a line. 0-height($img)
+        $textLines = $this->__getWrappedLines($Text, $pen, $Width);
+        $num_lines = count($textLines);
+
+        $line_width = 4; // the minimum size of line we are interested in detecting
+        $line_distance = 22; // average pixel distance between lines
+        $box_height = $Height + 1;
+        $first_line_position = $locX;
+        $lines_available = 1;
+        $minFontSize = 14;
+
+        if($num_lines > 1) {
+            $lineData = $this->__getImageLines($img, $num_lines, $X, $Y, $Width, $Height);
+            $imgLines = $lineData['lines'];
+
+            $first_line_position = $lineData['first_line_position'];
+            if(count($imgLines) > 1) {
+                $lines_available = count($imgLines);
+                if($box_height/$lines_available < 24) { // magic number 24 signifies the smallest text area we want to work with
+                    $lines_available = 1;
+                }
+            }
+            $minFontSize = 18;
+        }
+
+        if($num_lines > $lines_available) { // shrink to fit if needed
+            while(($Height < $box_height) || ($lines_available > 2 && ($num_lines > $lines_available))) {
+                $box_height = 0;
+                $longest_line = 0;
+
+                foreach($textLines as $textLine) {
+                    $line_length = strlen($textLine);
+                    if($line_length > 0) {
+                        $box_height += $newFontSize + 4; // assume 4px extra padding between lines to be safe
+                    }
+                    if($line_length > $longest_line) {
+                        $longest_line = $line_length;
+                    }
+                }
+
+                // better font guessing.. see how much extra text we wrapped and reduce font size accordingly
+                $textWidth = $longest_line * ($newFontSize / 2.0);
+                $delta_x = $textWidth - $Width;
+                $delta_font = ceil($delta_x / 12); // assume 12px/pt difference in font sizes to avoid over-shrinkage.
+                $delta_font = $delta_font>2?$delta_font:2; // avoid an infinite loop.
+
+                // Shrink the font, re-split the lines, and try again
+                if(($newFontSize - $delta_font) >= $minFontSize || !empty($overflow_text)) {
+                    $newFontSize -= $delta_font;
+                    $pen->setFontSize($newFontSize);
+                    $textLines = $this->__getWrappedLines($Text, $pen, $Width, $Height);
+                    $num_lines = count($textLines);
+                } else {
+                    $pen->setFontSize($newFontSize = $baseFontSize);
+                    $textLines = $this->__getWrappedLines($Text, $pen, $Width, $Height);
+                    $Text = "";
+                    for($i = 0; $i < count($textLines); $i++) {
+                        if($i < $lines_available) {
+                            $Text .= $textLines[$i] . ' ';
+                        } else {
+                            $overflow_text .= $textLines[$i] . ' ';
+                        }
+                    }
+                    $Text .= '... (Please See Attached)';
+                    $minFontSize = 20;
+                }
+
+                //                debug(array($textLines, $overflow_text, $Width, $textWidth, $newFontSize, $delta_font, $num_lines, $lines_available));
+            }
+        }
+
+        if($num_lines == 1) {  // not an else because the previous loop may have modified the count
+            $line_length = strlen($textLines[0]);
+
+            while( ($textWidth = $line_length * ($newFontSize / 2)) > $Width) {
+                // better font guessing.. see how much extra text we wrapped and reduce font size accordingly
+                $delta_x = $textWidth - $Width;
+                $delta_font = ceil($delta_x / 12); // assume 12px/pt difference in font sizes to avoid over-shrinkage.
+                $delta_font = $delta_font>0?$delta_font:2; // avoid an infinite loop.
+
+                // Shrink the font, re-split the lines, and try again..  i'm sure this can be more efficient -jas
+                $newFontSize = $pen->getFontSize() - $delta_font;
+                // insert a check here for minimum font sizes
+                $pen->setFontSize($newFontSize);
+            }
+
+            $penOffset = $baseFontSize/4;
+
+            // skip line detection for small boxes
+            if($Height < ($baseFontSize * 2)) {
+                $locY = $Y + $Height - $penOffset;
+            } else {
+                // detect the nearest line for large boxes
+                $next_box_line = $this->__next_box_line(
+                    $img,
+                    $X,
+                    $Y + $penOffset,
+                    $X + $Width,
+                    $Y + $Height + $penOffset);
+
+                $next_line = $next_box_line['y'];
+
+                if($next_line > 0) { // hopefully we found it
+                    $locY = $next_line - $penOffset; // nudge to just above the line
+                } else {
+                    $locY = $Y + $baseFontSize; // align to top
+                }
+            }
+
+            // write the text
+            $pen->setTextAlignment(Imagick::ALIGN_CENTER);
+            $img->annotateImage($pen, $X + ($Width / 2), $locY, 0, $textLines[0]);
+        } else if($num_lines <= $lines_available) { // multi-line text gets placed here
+            foreach($textLines as $index => $textLine) {
+                $posX = ($index==0 && $first_line_position) ? $first_line_position : $locX;
+                $img->annotateImage($pen, $posX, $imgLines[$index], 0, $textLine);
+            }
+        } else {  // otherwise we are putting multiple lines in a single space
+            $locY = $Y + $newFontSize + 2; // location of first line
+            foreach($textLines as $textLine) {
+                $img->annotateImage($pen, $locX, $locY, 0, $textLine);
+                $locY += $newFontSize + 6; // bump Y for the next line
+            }
+        }
+
+        // reset the pen
+        $pen->setFontSize($baseFontSize);
+        $pen->setTextAlignment(0);
+
+        // return any addendum text
+        return $overflow_text;
+    }
+
+    /**
+     * Function processes a pdf file located via $filePath into a paged array of jpeg image data
+     */
+    function __splitPdf($filePath) {
+        /* for use by shell code */
+        $descriptorspec = array(
+            0 => array("pipe", "r"),  // stdin is a pipe that the child will read from
+            1 => array("pipe", "w"),  // stdout is a pipe that the child will write to
+            2 => array("file", "/tmp/error-output.txt", "a") // stderr is a file to write to
+        );
+        $cwd = '/tmp';
+
+        $base_cmd = "gs -q -dSTRICT -dPARANOIDSAFER -dBATCH -dNOPAUSE -dNOPROMPT -dDOINTERPOLATE -dNOPSICC "
+            . "-dNumRenderingThreads=2 -dMaxBitmap=500000000 -dAlignToPixels=0 -dGridFitTT=2 -sDEVICE=jpeg "
+            . "-dTextAlphaBits=4 -dGraphicsAlphaBits=4 -r200";
+        $page_number = 0;
+        $error_value = 0;
+
+        while(!$error_value && $filePath) {
+            $page_number++;
+            $full_cmd = $base_cmd . " -dFirstPage=" . $page_number
+                . " -dLastPage=" . $page_number
+                . " -sOutputFile=- "
+                . $filePath;
+            //  . $this->data['Survey']['surveyfile']['tmp_name'];
+
+            $process = proc_open($full_cmd, $descriptorspec, $pipes, $cwd);
+
+            if (is_resource($process)) {
+                // $pipes now looks like this:
+                // 0 => writeable handle connected to child stdin
+                // 1 => readable handle connected to child stdout
+                // Any error output will be appended to /tmp/error-output.txt
+
+                fclose($pipes[0]);
+                $blob = stream_get_contents($pipes[1]);
+                fclose($pipes[1]);
+
+                // It is important that you close any pipes before calling
+                // proc_close in order to avoid a deadlock
+                $error_value = proc_close($process);
+
+                $error_string = "Requested FirstPage is greater than the number of pages in the file";
+                if(strncmp(substr($blob,1), $error_string, strlen($error_string)) !== 0) {
+                    $im = new Imagick();
+                    $im->readimageblob($blob);
+                    $im->setImageColorspace(2);
+                    $im->setImageFormat('JPEG');
+                    $im->setImageCompression(0);
+                    $im->setImageDepth(8);
+                    $im->setImageChannelDepth(1, 8);
+                    $output[] = $im->getImageBlob();
+                } else {
+                    $error_value = TRUE;
+                }
+            } else {
+                $error_value = TRUE;
+            }
+        }
+
+        if($page_number > 1) {
+            return($output);
+        } else {
+            return null;
+        }
+    }
+
+    /**
+     * Tests whether boxes A((x1, y1), (x2,y2)) and B((x1, y1), (x2, y2))
+     * contain overlapping regions.
+     */
+    function __testOverlap($Ax1, $Ay1, $Ax2, $Ay2, $Bx1, $By1, $Bx2, $By2) {
+        /**
+         * Test whether top left corner of box B is bounded by bottom right of box A
+         * Then whether the bottom right of box B is bounded by the top left of box A
+         */
+        if (($Ax2 > $Bx1) &&
+            ($Ay2 > $By1) &&
+            ($Bx2 > $Ax1) &&
+            ($By2 > $Ay1))
+            return true;
+        // else
+        return false;
+    }
+}
+?>

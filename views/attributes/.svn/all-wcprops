@@ -1,0 +1,29 @@
+K 25
+svn:wc:ra_dav:version-url
+V 46
+/svn/origami/!svn/ver/8/trunk/views/attributes
+END
+view.ctp
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/origami/!svn/ver/8/trunk/views/attributes/view.ctp
+END
+edit.ctp
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/origami/!svn/ver/8/trunk/views/attributes/edit.ctp
+END
+index.ctp
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/origami/!svn/ver/8/trunk/views/attributes/index.ctp
+END
+add.ctp
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/origami/!svn/ver/8/trunk/views/attributes/add.ctp
+END

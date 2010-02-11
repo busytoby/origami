@@ -1,0 +1,23 @@
+<?php
+/**
+ * Origami Image Helper
+ * @author jas Osborne
+ */
+class OrigamiImageHelper extends AppHelper {
+
+    var $helpers = array('Html', 'Javascript');
+
+    /**
+     * Generates an image tag with selectable regions and sets #x1, #y1, etc
+     * with the associated coordinates of the selected area.
+     *
+     * @param string $imgid UUID of image resource to generate tag for
+     * @return string An <img /> element and associated script tags.  Also adds jquery links as needed
+     */
+    function showSelectable($imgid) {
+        $code = '<img src="/surveys/viewpage/' . $imgid . '.png" alt="Document Page Image" id="' . $imgid . '" />';
+        $code .= $this->Html->div('dialog-titlebar', '', array('title' => 'Edit Line', 'id' => $imgid . '-editor', 'style' => 'padding: 0.25em;'));
+        return $this->output($code);
+    }
+}
+?>

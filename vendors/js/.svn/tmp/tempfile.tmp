@@ -1,0 +1,1391 @@
+var canvas_width, canvas_height, sidewidth;
+var thumbnail = 0;
+var ox,oy;
+var drag_el = null;
+var drag_canvas = null;
+var sx,sy;
+var svg;
+var nodes, buttons;
+var origamiTree;
+var selected_nodes = [];
+
+$.extend({
+    URLEncode:function(c) {
+        var o='';
+        var x=0;
+        c=c.toString();
+        var r=/(^[a-zA-Z0-9_.]*)/;
+        while(x<c.length) {
+            var m=r.exec(c.substr(x));
+            if(m!=null && m.length>1 && m[1]!='') {
+                o+=m[1];
+                x+=m[1].length;
+            } else {
+                if(c[x]==' ')
+                    o+='+';
+                else {
+                    var d=c.charCodeAt(x);
+                    var h=d.toString(16);
+                    o+='%'+(h.length<2?'0':'')+h.toUpperCase();
+                }
+                x++;
+            }
+        }
+        return o;
+    },
+    URLDecode:function(s){
+        var o=s.replace(/\+/g, ' ');
+        var binVal,t;
+        var r=/(%[^%]{2})/;
+        while((m=r.exec(o))!=null && m.length>1 && m[1]!='') {
+            b=parseInt(m[1].substr(1),16);
+            t=String.fromCharCode(b);
+            o=o.replace(m[1],t);
+        }
+        return o;
+    }
+});
+
+/**
+ * BEGIN Origami Tree Code
+ */
+OrigamiNode = function (id, pid, w, h) {
+    this.id = id;
+    this.pid = pid;
+    this.w = w;
+    this.h = h;
+
+    this.siblingIndex = 0;
+    this.dbIndex = 0;
+
+    this.XPosition = 0;
+    this.YPosition = 0;
+    this.prelim = 0;
+    this.modifier = 0;
+    this.leftNeighbor = null;
+    this.rightNeighbor = null;
+    this.nodeParent = null;
+    this.container = null;
+    this.nodeChildren = [];
+}
+
+OrigamiNode.prototype._getLevel = function () {
+    if (this.nodeParent.id == -1) {return 0;}
+    else return this.nodeParent._getLevel() + 1;
+}
+
+OrigamiNode.prototype._getChildrenCount = function () {
+    if(this.nodeChildren == null) {
+        return 0;
+    } else {
+        return this.nodeChildren.length;
+    }
+}
+
+OrigamiNode.prototype._getLeftSibling = function () {
+    if(this.leftNeighbor != null && this.leftNeighbor.nodeParent == this.nodeParent) {
+        return this.leftNeighbor;
+    } else {
+        return null;
+    }
+}
+
+OrigamiNode.prototype._getRightSibling = function () {
+    if(this.rightNeighbor != null && this.rightNeighbor.nodeParent == this.nodeParent) {
+        return this.rightNeighbor;
+    } else {
+        return null;
+    }
+}
+
+OrigamiNode.prototype._getChildAt = function (i) { return this.nodeChildren[i]; }
+
+OrigamiNode.prototype._getChildrenCenter = function (tree) {
+    node = this._getFirstChild();
+    node1 = this._getLastChild();
+    return node.prelim + ((node1.prelim - node.prelim) + tree._getNodeSize(node1)) / 2;
+}
+
+OrigamiNode.prototype._getFirstChild = function () { return this._getChildAt(0); }
+
+OrigamiNode.prototype._getLastChild = function () { return this._getChildAt(this._getChildrenCount() - 1); }
+
+OrigamiNode.prototype._drawChildrenLinks = function (tree) {
+    var s = [];
+    var xa = 0, ya = 0, xb = 0, yb = 0, xc = 0, yc = 0, xd = 0, yd = 0;
+    var node1 = null;
+
+    switch(tree.config.iRootOrientation) {
+        case OrigamiTree.RO_TOP:
+            xa = this.XPosition + (this.w / 2);
+            ya = this.YPosition + this.h;
+            break;
+
+        case OrigamiTree.RO_BOTTOM:
+            xa = this.XPosition + (this.w / 2);
+            ya = this.YPosition;
+            break;
+
+        case OrigamiTree.RO_RIGHT:
+            xa = this.XPosition;
+            ya = this.YPosition + (this.h / 2);
+            break;
+
+        case OrigamiTree.RO_LEFT:
+            xa = this.XPosition + this.w;
+            ya = this.YPosition + (this.h / 2);
+            break;
+    }
+
+    for (var k = 0; k < this.nodeChildren.length; k++) {
+        node1 = this.nodeChildren[k];
+
+        switch(tree.config.iRootOrientation) {
+            case OrigamiTree.RO_TOP:
+                xd = xc = node1.XPosition + (node1.w / 2);
+                yd = node1.YPosition;
+                xb = xa;
+                switch (tree.config.iNodeJustification) {
+                    case OrigamiTree.NJ_TOP:
+                        yb = yc = yd - tree.config.iLevelSeparation / 2;
+                        break;
+                    case OrigamiTree.NJ_BOTTOM:
+                        yb = yc = ya + tree.config.iLevelSeparation / 2;
+                        break;
+                    case OrigamiTree.NJ_CENTER:
+                        yb = yc = ya + (yd - ya) / 2;
+                        break;
+                }
+                break;
+
+            case OrigamiTree.RO_BOTTOM:
+                xd = xc = node1.XPosition + (node1.w / 2);
+                yd = node1.YPosition + node1.h;
+                xb = xa;
+                switch (tree.config.iNodeJustification) {
+                    case OrigamiTree.NJ_TOP:
+                        yb = yc = yd + tree.config.iLevelSeparation / 2;
+                        break;
+                    case OrigamiTree.NJ_BOTTOM:
+                        yb = yc = ya - tree.config.iLevelSeparation / 2;
+                        break;
+                    case OrigamiTree.NJ_CENTER:
+                        yb = yc = yd + (ya - yd) / 2;
+                        break;
+                }
+                break;
+
+            case OrigamiTree.RO_RIGHT:
+                xd = node1.XPosition + node1.w;
+                yd = yc = node1.YPosition + (node1.h / 2);
+                yb = ya;
+                switch (tree.config.iNodeJustification) {
+                    case OrigamiTree.NJ_TOP:
+                        xb = xc = xd + tree.config.iLevelSeparation / 2;
+                        break;
+                    case OrigamiTree.NJ_BOTTOM:
+                        xb = xc = xa - tree.config.iLevelSeparation / 2;
+                        break;
+                    case OrigamiTree.NJ_CENTER:
+                        xb = xc = xd + (xa - xd) / 2;
+                        break;
+                }
+                break;
+
+            case OrigamiTree.RO_LEFT:
+                xd = node1.XPosition;
+                yd = yc = node1.YPosition + (node1.h / 2);
+                yb = ya;
+                switch (tree.config.iNodeJustification) {
+                    case OrigamiTree.NJ_TOP:
+                        xb = xc = xd - tree.config.iLevelSeparation / 2;
+                        break;
+                    case OrigamiTree.NJ_BOTTOM:
+                        xb = xc = xa + tree.config.iLevelSeparation / 2;
+                        break;
+                    case OrigamiTree.NJ_CENTER:
+                        xb = xc = xa + (xd - xa) / 2;
+                        break;
+                }
+                break;
+        }
+
+        switch (tree.config.linkType) {
+            case "M":
+                vl1 = svg.line(this.container, xa, ya, xb, yb, {'class': 'attach_line',stroke: "#CCC","stroke-width": 4, "stroke-opacity": 0.5});
+                svg.line(this.container, xb, yb, xc, yc, {'class': 'attach_line',stroke: "#CCC","stroke-width": 4, "stroke-opacity": 0.5});
+                vl2 = svg.line(this.container, xc, yc, xd, yd, {'class': 'attach_line',stroke: "#CCC","stroke-width": 4, "stroke-opacity": 0.5});
+/*
+                vb = svg.use(this.container, xa, ya, 18, 18, '#attach_button_prototype');
+                vb.line = vl2;
+                vl1.button = vb
+*/
+                break;
+
+/*
+            case "B":
+                tree.ctx.moveTo(xa,ya);
+                tree.ctx.bezierCurveTo(xb,yb,xc,yc,xd,yd);
+                break;
+*/
+        }
+    }
+}
+
+OrigamiTree = function () {
+    this.config = {
+        iMaxDepth : 100,
+        iLevelSeparation : 40,
+        iSiblingSeparation : 40,
+        iSubtreeSeparation : 80,
+        iRootOrientation : OrigamiTree.RO_TOP,
+        iNodeJustification : OrigamiTree.NJ_CENTER,
+        topXAdjustment : 0,
+        topYAdjustment : 0,
+        linkType : "M",
+        defaultNodeWidth : 80,
+        defaultNodeHeight : 40,
+    }
+
+    this.self = this;
+
+    this.maxLevelHeight = [];
+    this.maxLevelWidth = [];
+    this.previousLevelNode = [];
+
+    this.rootYOffset = 0;
+    this.rootXOffset = 0;
+
+    this.nDatabaseNodes = [];
+    this.mapIDs = {};
+
+    this.root = new OrigamiNode(-1, null, null, 2, 2);
+}
+
+//Constant values
+
+//Tree orientation
+OrigamiTree.RO_TOP = 0;
+OrigamiTree.RO_BOTTOM = 1;
+OrigamiTree.RO_RIGHT = 2;
+OrigamiTree.RO_LEFT = 3;
+
+//Level node alignment
+OrigamiTree.NJ_TOP = 0;
+OrigamiTree.NJ_CENTER = 1;
+OrigamiTree.NJ_BOTTOM = 2;
+
+//Layout algorithm
+OrigamiTree._firstWalk = function (tree, node, level) {
+    var leftSibling = null;
+
+    node.XPosition = 0;
+    node.YPosition = 0;
+    node.prelim = 0;
+    node.modifier = 0;
+    node.leftNeighbor = null;
+    node.rightNeighbor = null;
+    tree._setLevelHeight(node, level);
+    tree._setLevelWidth(node, level);
+    tree._setNeighbors(node, level);
+    if(node._getChildrenCount() == 0 || level == tree.config.iMaxDepth) {
+        leftSibling = node._getLeftSibling();
+        if(leftSibling != null) {
+            node.prelim = leftSibling.prelim + tree._getNodeSize(leftSibling) + tree.config.iSiblingSeparation;
+        } else {
+            node.prelim = 0;
+        }
+    } else {
+        var n = node._getChildrenCount();
+        for(var i = 0; i < n; i++) {
+            var iChild = node._getChildAt(i);
+            OrigamiTree._firstWalk(tree, iChild, level + 1);
+        }
+
+        var midPoint = node._getChildrenCenter(tree);
+        midPoint -= tree._getNodeSize(node) / 2;
+        leftSibling = node._getLeftSibling();
+        if(leftSibling != null) {
+            node.prelim = leftSibling.prelim + tree._getNodeSize(leftSibling) + tree.config.iSiblingSeparation;
+            node.modifier = node.prelim - midPoint;
+            OrigamiTree._apportion(tree, node, level);
+        } else {
+            node.prelim = midPoint;
+        }
+    }
+}
+
+OrigamiTree._apportion = function (tree, node, level) {
+    var firstChild = node._getFirstChild();
+    var firstChildLeftNeighbor = firstChild.leftNeighbor;
+    var j = 1;
+    for(var k = tree.config.iMaxDepth - level; firstChild != null && firstChildLeftNeighbor != null && j <= k;) {
+        var modifierSumRight = 0;
+        var modifierSumLeft = 0;
+        var rightAncestor = firstChild;
+        var leftAncestor = firstChildLeftNeighbor;
+        for(var l = 0; l < j; l++) {
+            rightAncestor = rightAncestor.nodeParent;
+            leftAncestor = leftAncestor.nodeParent;
+            modifierSumRight += rightAncestor.modifier;
+            modifierSumLeft += leftAncestor.modifier;
+        }
+
+        var totalGap = (firstChildLeftNeighbor.prelim + modifierSumLeft + tree._getNodeSize(firstChildLeftNeighbor) + tree.config.iSubtreeSeparation) - (firstChild.prelim + modifierSumRight);
+        if(totalGap > 0) {
+            var subtreeAux = node;
+            var numSubtrees = 0;
+            for(; subtreeAux != null && subtreeAux != leftAncestor; subtreeAux = subtreeAux._getLeftSibling()) {
+                numSubtrees++;
+            }
+
+            if(subtreeAux != null) {
+                var subtreeMoveAux = node;
+                var singleGap = totalGap / numSubtrees;
+                for(; subtreeMoveAux != leftAncestor; subtreeMoveAux = subtreeMoveAux._getLeftSibling()) {
+                    subtreeMoveAux.prelim += totalGap;
+                    subtreeMoveAux.modifier += totalGap;
+                    totalGap -= singleGap;
+                }
+            }
+        }
+
+        j++;
+        if(firstChild._getChildrenCount() == 0) {
+            firstChild = tree._getLeftmost(node, 0, j);
+        } else {
+            firstChild = firstChild._getFirstChild();
+        }
+        if(firstChild != null) {
+            firstChildLeftNeighbor = firstChild.leftNeighbor;
+        }
+    }
+}
+
+OrigamiTree._secondWalk = function (tree, node, level, X, Y) {
+    if(level <= tree.config.iMaxDepth) {
+        var xTmp = tree.rootXOffset + node.prelim + X;
+        var yTmp = tree.rootYOffset + Y;
+        var maxsizeTmp = 0;
+        var nodesizeTmp = 0;
+        var flag = false;
+
+        switch(tree.config.iRootOrientation) {
+            case OrigamiTree.RO_TOP:
+            case OrigamiTree.RO_BOTTOM:
+                maxsizeTmp = tree.maxLevelHeight[level];
+                nodesizeTmp = node.h;
+                break;
+
+            case OrigamiTree.RO_RIGHT:
+            case OrigamiTree.RO_LEFT:
+                maxsizeTmp = tree.maxLevelWidth[level];
+                flag = true;
+                nodesizeTmp = node.w;
+                break;
+        }
+
+        switch(tree.config.iNodeJustification) {
+            case OrigamiTree.NJ_TOP:
+                node.XPosition = xTmp;
+                node.YPosition = yTmp;
+                break;
+
+            case OrigamiTree.NJ_CENTER:
+                node.XPosition = xTmp;
+                node.YPosition = yTmp + (maxsizeTmp - nodesizeTmp) / 2;
+                break;
+
+            case OrigamiTree.NJ_BOTTOM:
+                node.XPosition = xTmp;
+                node.YPosition = (yTmp + maxsizeTmp) - nodesizeTmp;
+                break;
+        }
+
+        if(flag) {
+            var swapTmp = node.XPosition;
+            node.XPosition = node.YPosition;
+            node.YPosition = swapTmp;
+        }
+
+        switch(tree.config.iRootOrientation) {
+            case OrigamiTree.RO_BOTTOM:
+                node.YPosition = -node.YPosition - nodesizeTmp;
+                break;
+
+            case OrigamiTree.RO_RIGHT:
+                node.XPosition = -node.XPosition - nodesizeTmp;
+                break;
+        }
+
+        if(node._getChildrenCount() != 0) {
+            OrigamiTree._secondWalk(tree, node._getFirstChild(), level + 1, X + node.modifier, Y + maxsizeTmp + tree.config.iLevelSeparation);
+        }
+
+        var rightSibling = node._getRightSibling();
+        if(rightSibling != null) {
+            OrigamiTree._secondWalk(tree, rightSibling, level, X, Y);
+        }
+    }
+}
+
+OrigamiTree.prototype._positionTree = function () {
+    this.maxLevelHeight = [];
+    this.maxLevelWidth = [];
+    this.previousLevelNode = [];
+    OrigamiTree._firstWalk(this.self, this.root, 0);
+
+    switch(this.config.iRootOrientation) {
+        case OrigamiTree.RO_TOP:
+        case OrigamiTree.RO_LEFT:
+            this.rootXOffset = this.config.topXAdjustment + this.root.XPosition;
+            this.rootYOffset = this.config.topYAdjustment + this.root.YPosition;
+            break;
+
+        case OrigamiTree.RO_BOTTOM:
+        case OrigamiTree.RO_RIGHT:
+            this.rootXOffset = this.config.topXAdjustment + this.root.XPosition;
+            this.rootYOffset = this.config.topYAdjustment + this.root.YPosition;
+    }
+
+    OrigamiTree._secondWalk(this.self, this.root, 0, 0, 0);
+}
+
+OrigamiTree.prototype._setLevelHeight = function (node, level) {
+    if (this.maxLevelHeight[level] == null)
+        this.maxLevelHeight[level] = 0;
+    if(this.maxLevelHeight[level] < node.h)
+        this.maxLevelHeight[level] = node.h;
+}
+
+OrigamiTree.prototype._setLevelWidth = function (node, level) {
+    if (this.maxLevelWidth[level] == null)
+        this.maxLevelWidth[level] = 0;
+    if(this.maxLevelWidth[level] < node.w)
+        this.maxLevelWidth[level] = node.w;
+}
+
+OrigamiTree.prototype._setNeighbors = function(node, level) {
+    node.leftNeighbor = this.previousLevelNode[level];
+    if(node.leftNeighbor != null)
+        node.leftNeighbor.rightNeighbor = node;
+    this.previousLevelNode[level] = node;
+}
+
+OrigamiTree.prototype._getNodeSize = function (node) {
+    switch(this.config.iRootOrientation) {
+        case OrigamiTree.RO_TOP:
+        case OrigamiTree.RO_BOTTOM:
+            return node.w;
+
+        case OrigamiTree.RO_RIGHT:
+        case OrigamiTree.RO_LEFT:
+            return node.h;
+    }
+    return 0;
+}
+
+OrigamiTree.prototype._getLeftmost = function (node, level, maxlevel) {
+    if(level >= maxlevel) return node;
+    if(node._getChildrenCount() == 0) return null;
+
+    var n = node._getChildrenCount();
+    for(var i = 0; i < n; i++) {
+        var iChild = node._getChildAt(i);
+        var leftmostDescendant = this._getLeftmost(iChild, level + 1, maxlevel);
+        if(leftmostDescendant != null)
+            return leftmostDescendant;
+    }
+
+    return null;
+}
+
+OrigamiTree.prototype.add = function (id, pid, w, h) {
+    var nw = w || this.config.defaultNodeWidth; //Width, height defaults...
+    var nh = h || this.config.defaultNodeHeight;
+
+    var pnode = null; //Search for parent node in database
+    if (pid == -1) {
+        pnode = this.root;
+    } else {
+        for (var k = 0; k < this.nDatabaseNodes.length; k++) {
+            if (this.nDatabaseNodes[k].id == pid) {
+                pnode = this.nDatabaseNodes[k];
+                break;
+            }
+        }
+    }
+
+    if(!id) {
+        id = this.nDatabaseNodes.length;
+        while(this.mapIDs[id] != null) {
+            id = id + 1;
+        }
+
+        id = "new_" + id;
+    }
+
+    var node = new OrigamiNode(id, pid, nw, nh);    //New node creation...
+    node.nodeParent = pnode;  //Set it's parent
+    var i = this.nDatabaseNodes.length; //Save it in database
+    node.dbIndex = this.mapIDs[id] = i;
+    this.nDatabaseNodes[i] = node;
+    var h = pnode.nodeChildren.length; //Add it as child of it's parent
+    node.siblingIndex = h;
+    pnode.nodeChildren[h] = node;
+}
+
+OrigamiTree.prototype.remove = function (id) {
+    dbIndex = this.mapIDs[id];
+    old_node = this.nDatabaseNodes[dbIndex];
+
+    pIndex = this.mapIDs[old_node.pid];
+
+    if(old_node.pid == -1) {
+        parent = this.root;
+    } else {
+        parent = this.nDatabaseNodes[pIndex];
+    }
+
+    for (var k = 0; k < parent.nodeChildren.length; k++) {
+        if(parent.nodeChildren[k].id == id) {
+            if(k < parent.nodeChildren.length - 1) {
+                parent.nodeChildren[k] = parent.nodeChildren[parent.nodeChildren.length - 1];
+                parent.nodeChildren.splice(parent.nodeChildren.length - 1, 1);
+                break;
+            } else {
+                parent.nodeChildren.splice(parent.nodeChildren.length - 1, 1);
+                break;
+            }
+        }
+    }
+
+    for (var k = 0; k < this.nDatabaseNodes.length; k++) {
+        if(this.nDatabaseNodes[k].pid == id) {
+            this.nDatabaseNodes[k].pid = -1;
+            this.nDatabaseNodes[k].nodeParent = this.root;
+            this.nDatabaseNodes[k].siblingIndex = this.root.nodeChildren.length;
+            this.root.nodeChildren[this.root.nodeChildren.length] = this.nDatabaseNodes[k];
+        }
+        if(k == this.nDatabaseNodes.length - 1) {
+            this.nDatabaseNodes[dbIndex] = this.nDatabaseNodes[k];
+            this.nDatabaseNodes[dbIndex].dbIndex = dbIndex;
+            this.mapIDs[this.nDatabaseNodes[k].id] = dbIndex;
+        }
+    }
+
+    for(var k = 0; k < parent.nodeChildren.length; k++) {
+        parent.nodeChildren[k].siblingIndex = k;
+        this.nDatabaseNodes[parent.nodeChildren[k].dbIndex] = parent.nodeChildren[k];
+    }
+
+    this.nDatabaseNodes.splice(this.nDatabaseNodes.length -1, 1);
+}
+
+OrigamiTree.prototype._drawTree = function () {
+    var node = null;
+    $("#node_container").remove();
+    var node_group = svg.group("node_container");
+
+    for (var n = 0; n < this.nDatabaseNodes.length; n++) {
+        node = this.nDatabaseNodes[n];
+
+        //Canvas part...
+        node.container = svg.group(node_group);
+        if(selected_nodes.indexOf(node.id) == -1) {
+            svg.use(node.container, node.XPosition, node.YPosition, node.w, node.h, '#node_container_prototype', {'id': node.id, 'fill': '#9CF'});
+        } else {
+            svg.use(node.container, node.XPosition, node.YPosition, node.w, node.h, '#node_container_prototype', {'id': node.id, 'fill': '#FC9'});
+        }
+        node._drawChildrenLinks(this.self);
+    }
+}
+
+OrigamiTree.prototype._updateTexts = function() {
+    for (var n = 0; n < this.nDatabaseNodes.length; n++) {
+        node = this.nDatabaseNodes[n];
+        node_frame = node.container.firstChild;
+        left = parseInt(node_frame.getAttribute('x')) + 12;
+        current_height = 24;
+        if(node.origamiData) {
+            for(var data in Iterator(node.origamiData)) {
+                displaystring = data[0] + ": " + data[1];
+                if(displaystring.length > 48) {
+                    displaystring = displaystring.substr(0, 48) + "...";
+                }
+                svg.text(node.container, left, parseInt(node_frame.getAttribute('y')) + current_height, displaystring, {'font-family': 'monospace'});
+                current_height = current_height + 20;
+            }
+        }
+    }
+}
+
+OrigamiTree.prototype.update = function() {
+    this._positionTree();
+    this._drawTree();
+    this._updateTexts();
+}
+/**
+ * END Origami Tree Code
+ */
+
+function moveElementTo(el, x, y) {
+    if(el.getAttribute('href') == "#attach_button_prototype") {
+        drag_el.setAttribute("x", x);
+        drag_el.setAttribute("y", y);
+        w = parseInt( drag_el.getAttribute("width") );
+        h = parseInt( drag_el.getAttribute("height") );
+        drag_el.line.setAttribute("x1", x + (w/2));
+        drag_el.line.setAttribute("y1", y + (h/2));
+    } else {
+        cx = parseInt( drag_el.getAttribute("x") );
+        cy = parseInt( drag_el.getAttribute("y") );
+        dx = cx - x;
+        dy = cy - y;
+
+        drag_children = $(drag_el).siblings();
+        for (i = 0; i < drag_children.length; i = i + 1) {
+            if(drag_children[i].getAttribute('class') == "attach_line") {
+                cx2 = parseInt( drag_children[i].getAttribute("x2") );
+                cy2 = parseInt( drag_children[i].getAttribute("y2") );
+                drag_children[i].setAttribute("x2", cx2 - dx);
+                drag_children[i].setAttribute("y2", cy2 - dy);
+                continue;
+            } else if(drag_children[i].getAttribute('href') == "#attach_button_prototype") {
+                cx = parseInt( drag_children[i].getAttribute("x") );
+                cy = parseInt( drag_children[i].getAttribute("y") );
+                drag_children[i].setAttribute("x", cx - dx);
+                drag_children[i].setAttribute("y", cy - dy);
+
+                line = drag_children[i].line;
+                cx1 = parseInt( line.getAttribute("x1") );
+                cy1 = parseInt( line.getAttribute("y1") );
+                line.setAttribute("x1", cx1 - dx);
+                line.setAttribute("y1", cy1 - dy);
+            }
+        }
+        drag_el.setAttribute("x", x);
+        drag_el.setAttribute("y", y);
+    }
+}
+
+function drag(evt) {
+    var current_scale = parseFloat($("svg")[0].getAttribute("rel"));
+    dx = Math.round((evt.clientX - ox) / current_scale);
+    dy = Math.round((evt.clientY - oy) / current_scale);
+/*
+    if (drag_el) {
+        if((Math.abs(dx) > 10) || (Math.abs(dy) > 10)) {
+            if(drag_el.getAttributeNS(null, 'pointer-events') != "none") {
+                drag_el.setAttributeNS(null, 'pointer-events', 'none');
+            }
+            cx = parseInt( drag_el.getAttribute("x") );
+            cy = parseInt( drag_el.getAttribute("y") );
+
+            moveElementTo(drag_el, cx + dx, cy + dy);
+            ox = evt.clientX;
+            oy = evt.clientY;
+
+            var drag_top_left_x = parseInt(drag_el.getAttribute("x"));
+            var drag_top_left_y = parseInt(drag_el.getAttribute("y"));
+            var drag_top_right_x = drag_top_left_x + 400;
+            var drag_top_right_y = drag_top_left_y;
+            var drag_bottom_right_x = drag_top_right_x;
+            var drag_bottom_right_y = drag_top_right_y + 150;
+            var drag_bottom_left_x = drag_top_left_x;
+            var drag_bottom_left_y = drag_bottom_right_y;
+
+            var viewBoxAttr = svg._svg.getAttribute("viewBox");
+            var x_offset = parseInt(viewBoxAttr.split(/\ /)[0]);
+            var y_offset = parseInt(viewBoxAttr.split(/\ /)[1]);
+            var x_size = parseInt(viewBoxAttr.split(/\ /)[2]);
+            var y_size = parseInt(viewBoxAttr.split(/\ /)[3]);
+            var canvas_top_left_x = x_offset;
+            var canvas_top_left_y = y_offset;
+            var canvas_top_right_x = x_offset + x_size;
+            var canvas_top_right_y = y_offset;
+            var canvas_bottom_right_x = canvas_top_right_x;
+            var canvas_bottom_right_y = y_offset + y_size;
+            var canvas_bottom_left_x = x_offset;
+            var canvas_bottom_left_y = canvas_bottom_right_y;
+
+            var increment = parseInt(10 / current_scale);
+
+            if((drag_top_left_y < canvas_top_left_y) || (drag_top_right_y < canvas_top_right_y)) {
+                moveElementTo(drag_el, drag_top_left_x, drag_top_left_y - increment);
+                control_canvas("move", "n");
+//                setInterval(function() {
+//                    control_canvas('move', 'n');
+//                    moveElementTo(drag_el+", '"+drag_top_left_x+"', '"+parseInt(drag_top_left_y - increment)+"'");
+//                }, 100);
+            }
+            if((drag_top_right_x > canvas_top_right_x) || (drag_bottom_right_x > canvas_bottom_right_x)) {
+               moveElementTo(drag_el, drag_top_left_x + increment, drag_top_left_y);
+                control_canvas("move", "e");
+            }
+            if((drag_bottom_left_y > canvas_bottom_left_y) || (drag_bottom_right_y > canvas_bottom_right_y)) {
+               moveElementTo(drag_el, drag_top_left_x, drag_top_left_y + increment);
+                control_canvas("move", "s");
+            }
+            if((drag_top_left_x < canvas_top_left_x) || (drag_bottom_left_x < canvas_bottom_left_x)) {
+               moveElementTo(drag_el, drag_top_left_x - increment, drag_top_left_y);
+                control_canvas("move", "w");
+            }
+        }
+    } else if(drag_canvas) {
+        drag_canvas.setAttribute("viewBox", (cx + dx)+" "+(cy + dy)+" "+sx+" "+sy);
+    }
+*/
+    if(drag_canvas) {
+        drag_canvas.setAttribute("viewBox", (cx + dx)+" "+(cy + dy)+" "+sx+" "+sy);
+    }
+}
+
+function start_dragging(evt) {
+/*
+    if(evt.target != svg._svg) {
+        if(evt.target.correspondingUseElement) { // opera
+            drag_el = evt.target.correspondingUseElement;
+        } else { // firefox
+            drag_el = evt.target;
+        }
+        if(drag_el.getAttribute('class') == "attach_line") { drag_el = drag_el.button; }
+        if(drag_el.getAttribute('href') == "#node_container_prototype" || drag_el.getAttribute('href') == "#attach_button_prototype") {
+            drag_el.orig_x = parseInt( drag_el.getAttribute("x") );
+            drag_el.orig_y = parseInt( drag_el.getAttribute("y") );
+        }
+    } else {
+*/
+    drag_canvas = svg._svg;
+    var viewBoxAttr = svg._svg.getAttribute("viewBox");
+    cx = parseInt(viewBoxAttr.split(/\ /)[0]);
+    cy = parseInt(viewBoxAttr.split(/\ /)[1]);
+    sx = parseInt(viewBoxAttr.split(/\ /)[2]);
+    sy = parseInt(viewBoxAttr.split(/\ /)[3]);
+    dx = 0;
+    dy = 0;
+    ox = evt.clientX;
+    oy = evt.clientY;
+}
+
+function stop_dragging(evt) {
+/*
+    if(drag_el) {
+//        moveElementTo(drag_el, drag_el.orig_x, drag_el.orig_y);
+        if(drag_el.getAttributeNS(null, 'pointer-events') == "none") {
+            if(evt.target.correspondingUseElement) { // opera
+                target_el = evt.target.correspondingUseElement;
+            } else { // firefox
+                target_el = evt.target;
+            }
+
+            drag_el.setAttributeNS(null, 'pointer-events', 'all');
+
+            if(target_el.getAttribute("href") == "#node_container_prototype" && drag_el.getAttribute("href") == "#attach_button_prototype") {
+                line = drag_el.line;
+                $(drag_el).remove();
+                new_button = svg.use($(target_el).parent()[0], px + pw, py + ph, 18, 18, '#attach_button_prototype');
+                new_button.line = line;
+                line.button = new_button
+                redrawNodeAttachments(target_el);
+            }
+        }
+        drag_el = null;
+    } else if(drag_canvas) {
+*/
+    if(drag_canvas) {
+        drag_canvas.setAttribute("viewBox", (cx + dx)+" "+(cy + dy)+" "+sx+" "+sy);
+        drag_canvas = null;
+    }
+    generate_thumbnail();
+}
+
+// http://www.quirksmode.org/js/findpos.html
+function findPos(obj) {
+    obj = obj[0] // dunno why this is needed -jas
+    var curleft = curtop = 0;
+    if (obj.offsetParent) {
+        do {
+            curleft += obj.offsetLeft;
+            curtop += obj.offsetTop;
+        } while (obj = obj.offsetParent);
+    }
+    return [curleft,curtop];
+}
+
+function kill_node(evt) {
+    var kill_target;
+
+    kill_target = getContainingNode(evt.target);
+
+    origamiTree.remove(kill_target.id);
+/*
+    siblings = $(kill_target).siblings();
+    for(i=0; i < siblings.length; i = i+1) {
+        if(siblings[i].button) {
+            $(siblings[i].button).remove();
+            $(siblings[i]).remove();
+        } else if(siblings[i].line) {
+            $(siblings[i].line).remove();
+            $(siblings[i]).remove();
+        }
+    }
+*/
+/* should attach orphans to grandparent some day?.. orphan for now
+    buttons = $(kill_target).siblings("[href=#attach_button_prototype]")
+    for(i=0; i < buttons.length; i = i+1) {
+        $(buttons[i].line).remove();
+    }
+*/
+/*
+    $(kill_target).parent().remove();
+*/
+    origamiTree.update();
+    generate_thumbnail();
+    return false;
+}
+
+function getContainingNode(el) {
+    if(el.correspondingUseElement) {
+        return (el.correspondingUseElement);
+    }
+
+    return $(el).parents('[href=#node_container_prototype]')[0];
+}
+
+function redrawNodeAttachments(el) {
+    attachments = $(el).siblings("[href=#attach_button_prototype]");
+    dir = 1
+
+    if(attachments.length) {
+        px = parseInt( el.getAttribute("x") );
+        py = parseInt( el.getAttribute("y") );
+        pw = parseInt( el.getAttribute("width") );
+
+        ph = parseInt( el.getAttribute("height") ) * 0.95;
+        x = px + (pw / 2) - 12;
+        y = py + ph;
+        dn = (pw / attachments.length) * 0.95;
+
+        if(attachments.length%2) {
+            dx = 0;
+        } else {
+            dx = dn / 2;
+        }
+
+        for(i = 0; i < attachments.length; i = i + 1) {
+            if(attachments.length%2 && i%2) {
+                dx = dx + dn;
+            }
+            attachments[i].setAttribute("x", x + (dir * dx));
+            attachments[i].setAttribute("y", y);
+            attachments[i].line.setAttribute("x1", x + (dir * dx) + 6);
+            attachments[i].line.setAttribute("y1", y + 6);
+            if(attachments.length%2 == 0 && i%2 ) {
+                dx = dx + dn;
+            }
+            dir = dir * -1;
+        }
+    }
+    generate_thumbnail();
+}
+
+function add_node(evt, id, parent, skipUpdate) {
+//    var current_scale = parseFloat($("svg")[0].getAttribute("rel"));
+
+    if(evt) {
+        parent = getContainingNode(evt.target);
+        origamiTree.add(id, parent.id, 400, 150);
+        evt.stopPropagation();
+        evt.preventDefault();
+    } else {
+        origamiTree.add(id, parent, 400, 150);
+    }
+
+    if(skipUpdate == null) {
+        origamiTree.update();
+        generate_thumbnail();
+    }
+
+    return false;
+}
+
+function update_node_text(id, question, explanation, parent_answer) {
+    var dbIndex = origamiTree.mapIDs[id];
+
+    if(dbIndex != null) {
+        origamiTree.nDatabaseNodes[dbIndex].origamiData = {
+            'question': $.URLDecode(question),
+            'explanation': $.URLDecode(explanation),
+            'parent_answer': $.URLDecode(parent_answer)
+        }
+    }
+}
+
+function control_canvas(act, dir, val) {
+    var control_err = null;
+    var current_scale = parseFloat($("svg")[0].getAttribute("rel"));
+    var viewBoxAttr = $("svg")[0].getAttribute("viewBox");
+    var x_offset = parseInt(viewBoxAttr.split(/\ /)[0]);
+    var y_offset = parseInt(viewBoxAttr.split(/\ /)[1]);
+    var x_size = parseInt(viewBoxAttr.split(/\ /)[2]);
+    var y_size = parseInt(viewBoxAttr.split(/\ /)[3]);
+    switch(act) {
+        case "move":
+            var increment = parseInt(10 / current_scale);
+            switch(dir) {
+                case "n":
+                    y_offset = parseFloat(y_offset - increment);
+                    break;
+                case "ne":
+                    x_offset = parseFloat(x_offset + increment);
+                    y_offset = parseFloat(y_offset - increment);
+                    break;
+                case "e":
+                    x_offset = parseFloat(x_offset + increment);
+                    break;
+                case "se":
+                    x_offset = parseFloat(x_offset + increment);
+                    y_offset = parseFloat(y_offset + increment);
+                    break;
+                case "s":
+                    y_offset = parseFloat(y_offset + increment);
+                    break;
+                case "sw":
+                    x_offset = parseFloat(x_offset - increment);
+                    y_offset = parseFloat(y_offset + increment);
+                    break;
+                case "w":
+                    x_offset = parseFloat(x_offset - increment);
+                    break;
+                case "nw":
+                    x_offset = parseFloat(x_offset - increment);
+                    y_offset = parseFloat(y_offset - increment);
+                    break;
+                default:
+                    x_offset = parseInt(val.split(/,/)[0]);
+                    y_offset = parseInt(val.split(/,/)[1]);
+                    break;
+            }
+            break;
+        case "zoom":
+            var new_scale;
+            switch(dir) {
+                case "in":
+                    if(current_scale < 2) {
+                        if(val) {
+                            new_scale = val;
+                        } else {
+                            new_scale = current_scale + 0.1;
+                        }
+                    } else {
+                        control_err = 1;
+                    }
+                    break;
+                case "out":
+                    if(current_scale > 0.1) {
+                        if(val) {
+                            new_scale = val;
+                        } else {
+                            new_scale = current_scale - 0.1;
+                        }
+                    } else {
+                        control_err = 1;
+                    }
+                    break;
+                default:
+                    if((val > 0) && (val < 2.1)) {
+                        new_scale = val;
+                    } else {
+                        control_err = 1;
+                    }
+                    break;
+            }
+            if(!control_err) {
+                var midpoint_x = parseFloat((x_offset + x_size) / 2);
+                var midpoint_y = parseFloat((y_offset + y_size) / 2);
+                var new_midpoint_x = parseFloat(midpoint_x / new_scale);
+                var new_midpoint_y = parseFloat(midpoint_y / new_scale);
+                x_offset = Math.round(midpoint_x - new_midpoint_x);
+                y_offset = Math.round(midpoint_y - new_midpoint_y);
+                x_size = parseFloat(canvas_width / new_scale).toFixed(0);
+                y_size = parseFloat(canvas_height / new_scale).toFixed(0);
+                $("svg")[0].setAttribute("rel", new_scale);
+            }
+            break;
+    }
+    if(!control_err) {
+        $("svg")[0].setAttribute("viewBox", x_offset+" "+y_offset+" "+x_size+" "+y_size);
+        generate_thumbnail();
+    }
+}
+
+function select_node(evt) {
+    var target_node = getContainingNode(evt.target);
+    var target_node_id = parseInt(target_node.id);
+
+    if(selected_nodes.length == 0) {
+        selected_nodes = [target_node_id];
+    } else {
+        if(selected_nodes.indexOf(target_node_id) == -1) {
+            selected_nodes = [target_node_id];
+        } else {
+            if(selected_nodes.length > 1) {
+                selected_nodes = [target_node_id];           
+            } else {
+                select_children(target_node_id);
+            }
+        }
+    }
+
+    origamiTree.update();
+    generate_thumbnail();
+}
+
+function select_children(node_id) {
+    dbIndex = origamiTree.mapIDs[node_id];
+    current_node = origamiTree.nDatabaseNodes[dbIndex];
+    var foo;
+
+    $(current_node.nodeChildren).each(function() {
+        selected_nodes.push(this.id);
+        if(this.nodeChildren.length > 0)
+            foo = select_children(this.id);
+    });
+}
+
+function setup_nodes() {
+    nodes = svg.defs('nodes');
+
+    node_container = svg.symbol(nodes, 'node_container_prototype', 0, 0, 400, 150, {preserveAspectRatio: "none", onclick: "select_node(evt)"});
+    svg.rect(node_container,3,3,394,144,11,11,{
+        id: 'node_container_frame',
+        fill: '#069',
+        'fill-opacity': 0.2,
+    });
+    node_container.rect = svg.rect(node_container,4,4,392,142,10,10,{
+        id: 'node_container_frame',
+        fill: 'inherit',
+        'fill-opacity': 1.0,
+    });
+
+    svg.use(node_container, 374, 8, 18, 18, '#close_button_prototype', {onclick: "kill_node(evt)"});
+    svg.use(node_container, 374, 124, 18, 18, '#add_button_prototype', {onclick: "add_node(evt)"});
+}
+
+function setup_buttons() {
+    buttons = svg.defs('buttons');
+
+    close_button = svg.symbol(buttons, 'close_button_prototype', 0, 0, 12, 12);
+    svg.circle(close_button, 6, 6, 5, {
+        id: 'close_button_prototype_circle',
+        'fill-opacity': 0,
+        'stroke-width': 0,
+    });
+    svg.line(close_button, 3.88, 8.12, 8.12, 3.88, {
+        id: 'close_button_prototype_inner_line_1',
+        stroke: '#FFF',
+        'stroke-width': 2
+    });
+    svg.line(close_button, 3.88, 3.88, 8.12, 8.12, {
+        id: 'close_button_prototype_inner_line_2',
+        stroke: '#FFF',
+        'stroke-width': 2
+    });
+
+    add_button = svg.symbol(buttons, 'add_button_prototype', 0, 0, 12, 12);
+    svg.circle(add_button, 6, 6, 5, {
+        id: 'add_button_prototype_circle',
+        'fill-opacity': 0,
+        'stroke-width': 0,
+    });
+    svg.line(add_button, 3, 6, 9, 6, {
+        id: 'add_button_prototype_inner_line_1',
+        stroke: '#FFF',
+        'stroke-width': 2
+    });
+    svg.line(add_button, 6, 3, 6, 9, {
+        id: 'add_button_prototype_inner_line_2',
+        stroke: '#FFF',
+        'stroke-width': 2
+    });
+
+    attach_button = svg.symbol(buttons, 'attach_button_prototype', 0, 0, 12, 12);
+    svg.circle(attach_button, 6, 6, 5, {
+        id: 'attach_button_prototype_circle',
+        fill: '#9CF',
+        'fill-opacity': 1,
+        stroke: '#069',
+        'stroke-width': 1,
+        'stroke-opacity': 0.2
+    });
+    svg.circle(attach_button, 6, 6, 1, {
+        id: 'attach_button_prototype_inner_dot',
+        fill: '#FFF',
+        'fill-opacity': 1
+    });
+}
+
+function size_me(sidewidth) {
+    sidewidth = parseInt(sidewidth);
+    var viewport_width = parseInt(window.innerWidth);
+    var viewport_height = parseInt(window.innerHeight);
+    canvas_width = parseInt(viewport_width - sidewidth);
+    canvas_height = parseInt(viewport_height - 150);
+    $("#top_border").css("width", canvas_width+'px');
+    $("#right_border").css("height", parseInt(canvas_height + 40)+'px');
+    $("#right_border").css("left", parseInt(canvas_width + 20)+'px');
+    $("#bottom_border").css("top", parseInt(canvas_height + 100)+'px');
+    $("#bottom_border").css("width", canvas_width+'px');
+    $("#left_border").css("height", parseInt(canvas_height + 40)+'px');
+    $("a.no-zoom").css("top", parseInt((canvas_height / 2) + 30)+'px');
+    $("#canvas").css("width", canvas_width+'px');
+    $("#canvas").css("height", canvas_height+'px');
+    $("#sidebar").css("height", parseInt(viewport_height - 80)+'px');
+    $("#toggle_sidebar").css("height", parseInt(viewport_height - 80)+'px');
+    $("#edit").css("height", parseInt(viewport_height - 270)+'px');
+    $("#text_input").css("height", parseInt(viewport_height - 358)+'px');
+    $("#searchbox").css("width", parseInt(canvas_width + 40)+'px');
+    $("#search").css("width", parseInt(canvas_width - 90)+'px');
+    generate_thumbnail();
+}
+
+function hide_sidebar() {
+    sidewidth = 50;
+    var current_scale = parseFloat($("svg")[0].getAttribute("rel"));
+    var viewBoxAttr = svg._svg.getAttribute("viewBox");
+    var x_offset = parseInt(viewBoxAttr.split(/\ /)[0]);
+    var y_offset = parseInt(viewBoxAttr.split(/\ /)[1]);
+    size_me(sidewidth);
+    var new_canvas_width = Math.round(canvas_width / current_scale);
+    var new_canvas_height = Math.round(canvas_height / current_scale);
+    $("svg")[0].setAttribute("width", canvas_width);
+    $("svg")[0].setAttribute("height", canvas_height);
+    $("svg")[0].setAttribute("viewBox", x_offset+" "+y_offset+" "+new_canvas_width+" "+new_canvas_height);
+    $("#sidebar").css("display", "none");
+    $("#thumbnail_container").css("display", "none");
+    $("#thumbnail").css("display", "none");
+    $("#viewbox").css("display", "none");
+    $("#edit").css("display", "none");
+    thumbnail = 0;
+    $("#toggle_sidebar").attr("class", "show_sidebar");
+    $("#toggle_sidebar a").replaceWith('<a href="#">&lt;</a>');
+    $("#toggle_sidebar a").bind("click", show_sidebar);
+    return false;
+}
+
+function show_sidebar() {
+    sidewidth = 300;
+    var current_scale = parseFloat($("svg")[0].getAttribute("rel"));
+    var viewBoxAttr = svg._svg.getAttribute("viewBox");
+    var x_offset = parseInt(viewBoxAttr.split(/\ /)[0]);
+    var y_offset = parseInt(viewBoxAttr.split(/\ /)[1]);
+    size_me(sidewidth);
+    var new_canvas_width = Math.round(canvas_width / current_scale);
+    var new_canvas_height = Math.round(canvas_height / current_scale);
+    $("svg")[0].setAttribute("width", canvas_width);
+    $("svg")[0].setAttribute("height", canvas_height);
+    $("svg")[0].setAttribute("viewBox", x_offset+" "+y_offset+" "+new_canvas_width+" "+new_canvas_height);
+    $("#sidebar").css("display", "block");
+    $("#thumbnail_container").css("display", "block");
+    $("#thumbnail").css("display", "block");
+    $("#viewbox").css("display", "block");
+    $("#edit").css("display", "block");
+    thumbnail = 1;
+    $("#toggle_sidebar").attr("class", "hide_sidebar");
+    $("#toggle_sidebar a").replaceWith('<a href="#">&gt;</a>');
+    $("#toggle_sidebar a").bind("click", hide_sidebar);
+    generate_thumbnail();
+    return false;
+}
+
+function generate_thumbnail() {
+    if(thumbnail) {
+        var current_scale = parseFloat($("svg")[0].getAttribute("rel"));
+        var x_offset, y_offset, thumb_x_offset, thumb_y_offset, thumb_x_size, thumb_y_size, thumb_scale, viewbox_x, viewbox_y, viewbox_width, viewbox_height, starting_viewbox_x_offset, starting_viewbox_y_offset, ending_viewbox_x_offset, ending_viewbox_y_offset;
+        var viewBoxAttr = svg._svg.getAttribute("viewBox");
+        var furthest_x_negative = parseInt(0);
+        var furthest_y_negative = parseInt(0);
+        var furthest_x_positive = parseInt(0);
+        var furthest_y_positive = parseInt(0);
+        var negative_nodes = svg._svg.getElementsByTagName("use");
+        for (i = 0; i < negative_nodes.length; i++) {
+            if(parseInt(negative_nodes[i].getAttribute("x")) < furthest_x_negative) {
+                furthest_x_negative = parseInt(negative_nodes[i].getAttribute("x"));
+            }
+            if(parseInt(negative_nodes[i].getAttribute("y")) < furthest_y_negative) {
+                furthest_y_negative = parseInt(negative_nodes[i].getAttribute("y"));
+            }
+        }
+        if(furthest_x_negative < 0) {
+            x_offset = furthest_x_negative;
+        } else {
+            x_offset = parseInt(viewBoxAttr.split(/\ /)[0]);
+        }
+        if(furthest_y_negative < 0) {
+            y_offset = furthest_y_negative;
+        } else {
+            y_offset = parseInt(viewBoxAttr.split(/\ /)[1]);
+        }
+        if((parseInt(viewBoxAttr.split(/\ /)[2]) - x_offset) > parseInt(svg._svg.getAttribute("width"))) {
+            thumb_x_size = parseInt(viewBoxAttr.split(/\ /)[2]) - x_offset;
+        } else {
+            thumb_x_size = parseInt(svg._svg.getAttribute("width")) + x_offset;
+        }
+        if((parseInt(viewBoxAttr.split(/\ /)[3]) - y_offset) > parseInt(svg._svg.getAttribute("height"))) {
+            thumb_y_size = parseInt(viewBoxAttr.split(/\ /)[3]) - y_offset;
+        } else {
+            thumb_y_size = parseInt(svg._svg.getAttribute("height")) + y_offset;
+        }
+        var positive_nodes = svg._svg.getElementsByTagName("use");
+        for (i = 0; i < positive_nodes.length; i++) {
+            if((parseInt(positive_nodes[i].getAttribute("x")) + 450) > furthest_x_positive) {
+                furthest_x_positive = parseInt(parseInt(positive_nodes[i].getAttribute("x")) + 450);
+            }
+            if((parseInt(positive_nodes[i].getAttribute("y")) + 200) > furthest_y_positive) {
+                furthest_y_positive = parseInt(parseInt(positive_nodes[i].getAttribute("y")) + 200);
+            }
+        }
+        if(furthest_x_positive && furthest_x_negative) {
+            thumb_x_size = parseInt(furthest_x_positive + Math.abs(furthest_x_negative));
+        } else {
+            if(furthest_x_positive > thumb_x_size) {
+                thumb_x_size = furthest_x_positive;
+            }
+        }
+
+        if(x_offset < 0) {
+            thumb_x_offset = x_offset;
+        } else {
+            thumb_x_offset = parseFloat(0);
+        }
+        if(y_offset < 0) {
+            thumb_y_offset = y_offset;
+        } else {
+            thumb_y_offset = parseFloat(0);
+        }
+
+        if(furthest_y_positive && furthest_y_negative) {
+            thumb_y_size = parseInt(furthest_y_positive + Math.abs(furthest_y_negative));
+        } else {
+            if(furthest_y_positive > thumb_y_size) {
+                thumb_y_size = furthest_y_positive;
+            }
+            if(thumb_y_offset < 0) {
+                thumb_y_size = thumb_y_size - thumb_y_offset;
+            }
+        }
+
+        if(parseFloat(thumb_x_size / 240) > parseFloat(thumb_y_size / 180)) {
+            thumb_scale = parseFloat(thumb_x_size / 240);
+        } else {
+            thumb_scale = parseFloat(thumb_y_size / 180);
+        }
+        thumb_width = Math.round(thumb_x_size / thumb_scale);
+        thumb_height = Math.round(thumb_y_size / thumb_scale);
+        viewbox_x = parseInt(Math.round((parseInt(viewBoxAttr.split(/\ /)[0]) - thumb_x_offset) / thumb_scale) - 1);
+        viewbox_y = parseInt(Math.round((parseInt(viewBoxAttr.split(/\ /)[1]) - thumb_y_offset) / thumb_scale) - 1);
+        viewbox_width = Math.round(parseInt(viewBoxAttr.split(/\ /)[2]) / thumb_scale);
+        viewbox_height = Math.round(parseInt(viewBoxAttr.split(/\ /)[3]) / thumb_scale);
+        if((viewbox_width + viewbox_x) > thumb_width) {
+            viewbox_width = (thumb_width - viewbox_x);
+        }
+        if((viewbox_height + viewbox_y) > thumb_height) {
+            viewbox_height = (thumb_height - viewbox_y);
+        }
+        if($("#thumbnail")) {
+            $("#viewbox").appendTo("#sidebar");
+            $("#thumbnail").remove();
+        }
+        $("#canvas").clone().attr("id", "thumbnail").prependTo("#thumbnail_container");
+        $("#thumbnail").css("width", thumb_width+'px');
+        $("#thumbnail").css("height", thumb_height+'px');
+        $("#thumbnail").css("top", parseInt(4 + Math.round((180 - thumb_height) / 2)));
+        $("#thumbnail").css("left", parseInt(4 + Math.round((240 - thumb_width) / 2)));
+        $("#thumbnail")[0].removeAttribute("class");
+        $("svg")[1].setAttribute("viewBox", thumb_x_offset+" "+thumb_y_offset+" "+thumb_x_size+" "+thumb_y_size);
+        $("svg")[1].setAttribute("width", thumb_width);
+        $("svg")[1].setAttribute("height", thumb_height);
+        $("svg")[1].removeAttribute("onmouseup");
+        $("svg")[1].removeAttribute("onmousemove");
+        $("svg")[1].removeAttribute("onmousedown");
+        $("svg")[1].removeAttribute("rel");
+        $("#viewbox").appendTo("#thumbnail");
+        $("#viewbox").css("display", "block");
+        $("#viewbox").css("width", viewbox_width+'px');
+        $("#viewbox").css("height", viewbox_height+'px');
+        $("#viewbox").css("top", viewbox_y+'px');
+        $("#viewbox").css("left", viewbox_x+'px');
+        //$("#viewbox").draggable({ containment: "#thumbnail", start: function() {}, stop: function() {} });
+    }
+}
+
+$(document).ready(function() {
+    sidewidth = 300;
+    size_me(sidewidth);
+    var canvas = $('#canvas');
+    $(canvas).bind("mouseleave", function(evt) { stop_dragging(evt); });
+    canvas.svg({settings: {rel:"1",onmousedown:"start_dragging(evt)",onmousemove:"drag(evt)",onmouseup:"stop_dragging(evt)",viewBox:"0 0 "+canvas_width+" "+canvas_height}});
+    svg = canvas.svg('get');
+    setup_buttons();
+    setup_nodes();
+    origamiTree = new OrigamiTree();
+
+    $(window).bind("resize", function() {
+        var current_scale = parseFloat($("svg")[0].getAttribute("rel"));
+        var viewBoxAttr = svg._svg.getAttribute("viewBox");
+        var x_offset = parseInt(viewBoxAttr.split(/\ /)[0]);
+        var y_offset = parseInt(viewBoxAttr.split(/\ /)[1]);
+        size_me(sidewidth);
+        var new_canvas_width = Math.round(canvas_width / current_scale);
+        var new_canvas_height = Math.round(canvas_height / current_scale);
+        $("svg")[0].setAttribute("width", canvas_width);
+        $("svg")[0].setAttribute("height", canvas_height);
+        $("svg")[0].setAttribute("viewBox", x_offset+" "+y_offset+" "+new_canvas_width+" "+new_canvas_height);
+        generate_thumbnail();
+    });
+    $("#canvas").mousewheel(function(event, delta) {
+        var current_scale = parseFloat($("svg")[0].getAttribute("rel"));
+        var new_scale;
+        if(delta > 0) {
+            new_scale = current_scale + 0.1;
+        } else {
+            new_scale = current_scale - 0.1;
+        }
+        new_scale = parseFloat(new_scale).toFixed(1);
+        if((new_scale > 0) && (new_scale < 2.1)) {
+            $("svg")[0].setAttribute("rel", new_scale);
+            var viewBoxAttr = svg._svg.getAttribute("viewBox");
+            var starting_x_offset = parseInt(viewBoxAttr.split(/\ /)[0]);
+            var starting_y_offset = parseInt(viewBoxAttr.split(/\ /)[1]);
+            var client_mouse_x = parseInt(event.clientX - 10);
+            var client_mouse_y = parseInt(event.clientY - 70);
+            var actual_mouse_x = Math.round(client_mouse_x / current_scale);
+            var actual_mouse_y = Math.round(client_mouse_y / current_scale);
+            var mouse_x = actual_mouse_x + starting_x_offset;
+            var mouse_y = actual_mouse_y + starting_y_offset;
+            var new_canvas_width = Math.round(canvas_width / new_scale);
+            var new_canvas_height = Math.round(canvas_height / new_scale);
+            var new_actual_mouse_x = parseFloat(client_mouse_x / new_scale);
+            var new_actual_mouse_y = parseFloat(client_mouse_y / new_scale);
+            var new_x_offset = Math.round(mouse_x - new_actual_mouse_x);
+            var new_y_offset = Math.round(mouse_y - new_actual_mouse_y);
+            $("svg")[0].setAttribute("viewBox", new_x_offset+" "+new_y_offset+" "+new_canvas_width+" "+new_canvas_height);
+            generate_thumbnail();
+        }
+        return false; // prevent default (scrolling) action
+    });
+    $("span a").each(function() {
+        var act = $(this).parent().attr("class");
+        var dir = $(this).attr("class");
+        $(this).mousehold(function() { control_canvas(act, dir); });
+        $(this).bind("click", function() { control_canvas(act, dir); return false; });
+    });
+    $("a.in-full").bind("click", function() { control_canvas("zoom", "in", 2.0); return false; });
+    $("a.out-full").bind("click", function() { control_canvas("zoom", "out", 0.1); return false; });
+    $("a.no-zoom").bind("click", function() { control_canvas("zoom", null, 1.0); return false; });
+    $("a.normal").bind("click", function() { control_canvas("move", null, "0,0"); return false; });
+    $("div.hide_sidebar a").bind("click", hide_sidebar);
+    thumbnail = 1;
+    generate_thumbnail();
+});

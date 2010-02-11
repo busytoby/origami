@@ -1,0 +1,8 @@
+DROP TABLE IF EXISTS eav_integers;
+DROP TABLE IF EXISTS eav_text;
+DROP TABLE IF EXISTS eav_datetimes;
+DROP TABLE IF EXISTS eav_files;
+DROP TABLE IF EXISTS eav_varchars;
+DROP TABLE IF EXISTS eav_data;
+DROP TABLE IF EXISTS attributes;
+DROP TABLE IF EXISTS datatypes;

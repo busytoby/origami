@@ -1,0 +1,703 @@
+<?php
+
+class OrigamiToken {
+    const UNDEFINED             = 0;
+    const CHAR                  = 1;
+    const IDENTIFIER            = 2;
+    const WORD                  = 3;
+    const STRING                = 4;
+    const NUMBER                = 5;
+
+    const MATH_OPERATOR         = 7;
+    const COMPARISON_OPERATOR   = 8;
+    const QUOTE                 = 9;
+    const LPAREN                = 10;
+    const RPAREN                = 11;
+    const SEPARATOR             = 12;
+    const TRUE                  = 13;
+    const FALSE                 = 14;
+    const TEXT_TYPE             = 15;
+    const TEXTAREA_TYPE         = 16;
+    const INTEGER_TYPE          = 17;
+    const TREE_TYPE             = 18;
+}
+
+class OrigamiLexerComponent extends Object {
+    private $data;
+    private $counter;
+    private $line;
+    private $state = 1;
+    public $token;
+    public $value;
+
+    private $prevTokenType = OrigamiToken::UNDEFINED;
+
+    private $debug = FALSE;
+
+    private $function_pointer;
+    private $identifiers;
+
+    private $func_stack;
+    private $stack_ptr;
+
+    function parse($data) {
+        $this->data = $data;
+        $this->counter = 0;
+        $this->line = 1;
+        $this->identifiers = array();
+        $this->func_stack = array(0 => array('argc' => 0, 'argv' => array()));
+        $this->stack_ptr = array();
+
+        while($this->yylex())
+            continue;
+
+        return($this->get_funcStack());
+    }
+
+    function get_funcName() { return $this->function_pointer; }
+
+    function get_identifiers() { return $this->identifiers; }
+
+    function get_funcStack() { return $this->func_stack; }
+
+    function showmsg($msg) {
+        if ($this->debug) {
+            echo $msg;
+        }
+    }
+
+
+    private $_yy_state = 1;
+    private $_yy_stack = array();
+
+    function yylex()
+    {
+        return $this->{'yylex' . $this->_yy_state}();
+    }
+
+    function yypushstate($state)
+    {
+        array_push($this->_yy_stack, $this->_yy_state);
+        $this->_yy_state = $state;
+    }
+
+    function yypopstate()
+    {
+        $this->_yy_state = array_pop($this->_yy_stack);
+    }
+
+    function yybegin($state)
+    {
+        $this->_yy_state = $state;
+    }
+
+
+
+/* ************************************************************ */
+
+
+    function yylex1()
+    {
+        $tokenMap = array (
+              1 => 0,
+              2 => 0,
+              3 => 2,
+              6 => 0,
+              7 => 0,
+            );
+        if ($this->counter >= strlen($this->data)) {
+            return false; // end of input
+        }
+        $yy_global_pattern = "/^(:[_a-z0-9]+\\.?[_a-z0-9]*)|^([a-zA-Z_]+\\()|^('([^'\n\r]|\\\\')*'|\"([^\"\n\r]|\\\\\")*\")|^([a-zA-Z_]+)|^(.)/";
+
+        do {
+            if (preg_match($yy_global_pattern, substr($this->data, $this->counter), $yymatches)) {
+                $yysubmatches = $yymatches;
+                $yymatches = array_filter($yymatches, 'strlen'); // remove empty sub-patterns
+                if (!count($yymatches)) {
+                    throw new Exception('Error: lexing failed because a rule matched' .
+                        'an empty string.  Input "' . substr($this->data,
+                        $this->counter, 5) . '... state START');
+                }
+                next($yymatches); // skip global match
+                $this->token = key($yymatches); // token number
+                if ($tokenMap[$this->token]) {
+                    // extract sub-patterns for passing to lex function
+                    $yysubmatches = array_slice($yysubmatches, $this->token + 1,
+                        $tokenMap[$this->token]);
+                } else {
+                    $yysubmatches = array();
+                }
+                $this->value = current($yymatches); // token value
+                $r = $this->{'yy_r1_' . $this->token}($yysubmatches);
+                if ($r === null) {
+                    $this->counter += strlen($this->value);
+                    $this->line += substr_count($this->value, "\n");
+                    // accept this token
+                    return true;
+                } elseif ($r === true) {
+                    // we have changed state
+                    // process this token in the new state
+                    return $this->yylex();
+                } elseif ($r === false) {
+                    $this->counter += strlen($this->value);
+                    $this->line += substr_count($this->value, "\n");
+                    if ($this->counter >= strlen($this->data)) {
+                        return false; // end of input
+                    }
+                    // skip this token
+                    continue;
+                } else {                    $yy_yymore_patterns = array(
+        1 => array(0, "^([a-zA-Z_]+\\()|^('([^'\n\r]|\\\\')*'|\"([^\"\n\r]|\\\\\")*\")|^([a-zA-Z_]+)|^(.)"),
+        2 => array(0, "^('([^'\n\r]|\\\\')*'|\"([^\"\n\r]|\\\\\")*\")|^([a-zA-Z_]+)|^(.)"),
+        3 => array(2, "^([a-zA-Z_]+)|^(.)"),
+        6 => array(2, "^(.)"),
+        7 => array(2, ""),
+    );
+
+                    // yymore is needed
+                    do {
+                        if (!strlen($yy_yymore_patterns[$this->token][1])) {
+                            throw new Exception('cannot do yymore for the last token');
+                        }
+                        $yysubmatches = array();
+                        if (preg_match('/' . $yy_yymore_patterns[$this->token][1] . '/',
+                              substr($this->data, $this->counter), $yymatches)) {
+                            $yysubmatches = $yymatches;
+                            $yymatches = array_filter($yymatches, 'strlen'); // remove empty sub-patterns
+                            next($yymatches); // skip global match
+                            $this->token += key($yymatches) + $yy_yymore_patterns[$this->token][0]; // token number
+                            $this->value = current($yymatches); // token value
+                            $this->line = substr_count($this->value, "\n");
+                            if ($tokenMap[$this->token]) {
+                                // extract sub-patterns for passing to lex function
+                                $yysubmatches = array_slice($yysubmatches, $this->token + 1,
+                                    $tokenMap[$this->token]);
+                            } else {
+                                $yysubmatches = array();
+                            }
+                        }
+                    	$r = $this->{'yy_r1_' . $this->token}($yysubmatches);
+                    } while ($r !== null && !is_bool($r));
+			        if ($r === true) {
+			            // we have changed state
+			            // process this token in the new state
+			            return $this->yylex();
+                    } elseif ($r === false) {
+                        $this->counter += strlen($this->value);
+                        $this->line += substr_count($this->value, "\n");
+                        if ($this->counter >= strlen($this->data)) {
+                            return false; // end of input
+                        }
+                        // skip this token
+                        continue;
+			        } else {
+	                    // accept
+	                    $this->counter += strlen($this->value);
+	                    $this->line += substr_count($this->value, "\n");
+	                    return true;
+			        }
+                }
+            } else {
+                throw new Exception('Unexpected input at line' . $this->line .
+                    ': ' . $this->data[$this->counter]);
+            }
+            break;
+        } while (true);
+
+    } // end function
+
+
+    const START = 1;
+    function yy_r1_1($yy_subpatterns)
+    {
+
+    self::showmsg("IDENTIFIER: {$this->value}\n");
+    $this->token = OrigamiToken::IDENTIFIER;
+    $id = substr($this->value, 1);
+    $this->identifiers[] = $id;
+    $this->func_stack[0]['argc']++;
+    $this->func_stack[0]['argv'][] = array('var' => $id);
+    }
+    function yy_r1_2($yy_subpatterns)
+    {
+
+    self::showmsg("FUNCTION: {$this->value}\n");
+    self::showmsg("   subpatterns: {$yy_subpatterns}\n");
+    $this->token = OrigamiToken::WORD;
+    $this->function_pointer = substr($this->value, 0, -1);
+    $i = array_push($this->func_stack, array('argc' => 0, 'argv' =>	array("function" => $this->function_pointer))) - 1;
+    $this->stack_ptr[] = $i;
+    $this->func_stack[0]['argc']++;
+    $this->func_stack[0]['argv'][] = array('ptr' => $i);
+    $this->yypushstate(self::IN_FUNC);
+    self::showmsg("pushing: yystate = {$this->_yy_state}\n");
+    }
+    function yy_r1_3($yy_subpatterns)
+    {
+
+    self::showmsg("  STRING: {$this->value}\n");
+    $this->token = OrigamiToken::STRING;
+//    $this->yypushstate(self::IN_STRING);
+//    self::showmsg("  pushing: yystate = {$this->_yy_state}\n");
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('text' => substr($this->value, 1, -1));
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r1_6($yy_subpatterns)
+    {
+
+    self::showmsg("  WORD: {$this->value}\n");
+    $this->token = OrigamiToken::WORD;
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('text' => $this->value);
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r1_7($yy_subpatterns)
+    {
+
+    $ptr = key( reset($this->func_stack) );
+    $this->func_stack[0]['argc']++;
+    $this->func_stack[0]['argv'][] = array('text' => $this->value);
+    self::showmsg("CHAR: {$this->value}\n");
+    $this->token = OrigamiToken::CHAR;
+    }
+
+
+/* ************************************************************ */
+
+
+    function yylex2()
+    {
+        $tokenMap = array (
+              1 => 0,
+              2 => 0,
+              3 => 0,
+              4 => 2,
+              7 => 0,
+              8 => 0,
+              9 => 0,
+              10 => 0,
+              11 => 0,
+              12 => 0,
+              13 => 0,
+              14 => 0,
+              15 => 0,
+              16 => 0,
+              17 => 0,
+              18 => 0,
+            );
+        if ($this->counter >= strlen($this->data)) {
+            return false; // end of input
+        }
+        $yy_global_pattern = "/^([ \t\n\r]+)|^(:[_a-z0-9]+\\.?[_a-z0-9]*)|^([a-zA-Z_]+\\()|^('([^'\n\r]|\\\\')*'|\"([^\"\n\r]|\\\\\")*\")|^([+-]?[0-9]+\\.?[0-9]*)|^(\\()|^(\\))|^(,)|^([Tt][Rr][Uu][Ee])|^([Ff][Aa][Ll][Ss][Ee])|^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)/";
+
+        do {
+            if (preg_match($yy_global_pattern, substr($this->data, $this->counter), $yymatches)) {
+                $yysubmatches = $yymatches;
+                $yymatches = array_filter($yymatches, 'strlen'); // remove empty sub-patterns
+                if (!count($yymatches)) {
+                    throw new Exception('Error: lexing failed because a rule matched' .
+                        'an empty string.  Input "' . substr($this->data,
+                        $this->counter, 5) . '... state IN_FUNC');
+                }
+                next($yymatches); // skip global match
+                $this->token = key($yymatches); // token number
+                if ($tokenMap[$this->token]) {
+                    // extract sub-patterns for passing to lex function
+                    $yysubmatches = array_slice($yysubmatches, $this->token + 1,
+                        $tokenMap[$this->token]);
+                } else {
+                    $yysubmatches = array();
+                }
+                $this->value = current($yymatches); // token value
+                $r = $this->{'yy_r2_' . $this->token}($yysubmatches);
+                if ($r === null) {
+                    $this->counter += strlen($this->value);
+                    $this->line += substr_count($this->value, "\n");
+                    // accept this token
+                    return true;
+                } elseif ($r === true) {
+                    // we have changed state
+                    // process this token in the new state
+                    return $this->yylex();
+                } elseif ($r === false) {
+                    $this->counter += strlen($this->value);
+                    $this->line += substr_count($this->value, "\n");
+                    if ($this->counter >= strlen($this->data)) {
+                        return false; // end of input
+                    }
+                    // skip this token
+                    continue;
+                } else {                    $yy_yymore_patterns = array(
+        1 => array(0, "^(:[_a-z0-9]+\\.?[_a-z0-9]*)|^([a-zA-Z_]+\\()|^('([^'\n\r]|\\\\')*'|\"([^\"\n\r]|\\\\\")*\")|^([+-]?[0-9]+\\.?[0-9]*)|^(\\()|^(\\))|^(,)|^([Tt][Rr][Uu][Ee])|^([Ff][Aa][Ll][Ss][Ee])|^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        2 => array(0, "^([a-zA-Z_]+\\()|^('([^'\n\r]|\\\\')*'|\"([^\"\n\r]|\\\\\")*\")|^([+-]?[0-9]+\\.?[0-9]*)|^(\\()|^(\\))|^(,)|^([Tt][Rr][Uu][Ee])|^([Ff][Aa][Ll][Ss][Ee])|^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        3 => array(0, "^('([^'\n\r]|\\\\')*'|\"([^\"\n\r]|\\\\\")*\")|^([+-]?[0-9]+\\.?[0-9]*)|^(\\()|^(\\))|^(,)|^([Tt][Rr][Uu][Ee])|^([Ff][Aa][Ll][Ss][Ee])|^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        4 => array(2, "^([+-]?[0-9]+\\.?[0-9]*)|^(\\()|^(\\))|^(,)|^([Tt][Rr][Uu][Ee])|^([Ff][Aa][Ll][Ss][Ee])|^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        7 => array(2, "^(\\()|^(\\))|^(,)|^([Tt][Rr][Uu][Ee])|^([Ff][Aa][Ll][Ss][Ee])|^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        8 => array(2, "^(\\))|^(,)|^([Tt][Rr][Uu][Ee])|^([Ff][Aa][Ll][Ss][Ee])|^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        9 => array(2, "^(,)|^([Tt][Rr][Uu][Ee])|^([Ff][Aa][Ll][Ss][Ee])|^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        10 => array(2, "^([Tt][Rr][Uu][Ee])|^([Ff][Aa][Ll][Ss][Ee])|^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        11 => array(2, "^([Ff][Aa][Ll][Ss][Ee])|^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        12 => array(2, "^([Tt][Ee][Xx][Tt][Aa][Rr][Ee][Aa])|^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        13 => array(2, "^([Tt][Ee][Xx][Tt])|^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        14 => array(2, "^([Ii][Nn][Tt][Ee][Gg][Ee][Rr])|^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        15 => array(2, "^([Tt][Rr][Ee][Ee])|^([a-zA-Z_]+)|^(.)"),
+        16 => array(2, "^([a-zA-Z_]+)|^(.)"),
+        17 => array(2, "^(.)"),
+        18 => array(2, ""),
+    );
+
+                    // yymore is needed
+                    do {
+                        if (!strlen($yy_yymore_patterns[$this->token][1])) {
+                            throw new Exception('cannot do yymore for the last token');
+                        }
+                        $yysubmatches = array();
+                        if (preg_match('/' . $yy_yymore_patterns[$this->token][1] . '/',
+                              substr($this->data, $this->counter), $yymatches)) {
+                            $yysubmatches = $yymatches;
+                            $yymatches = array_filter($yymatches, 'strlen'); // remove empty sub-patterns
+                            next($yymatches); // skip global match
+                            $this->token += key($yymatches) + $yy_yymore_patterns[$this->token][0]; // token number
+                            $this->value = current($yymatches); // token value
+                            $this->line = substr_count($this->value, "\n");
+                            if ($tokenMap[$this->token]) {
+                                // extract sub-patterns for passing to lex function
+                                $yysubmatches = array_slice($yysubmatches, $this->token + 1,
+                                    $tokenMap[$this->token]);
+                            } else {
+                                $yysubmatches = array();
+                            }
+                        }
+                    	$r = $this->{'yy_r2_' . $this->token}($yysubmatches);
+                    } while ($r !== null && !is_bool($r));
+			        if ($r === true) {
+			            // we have changed state
+			            // process this token in the new state
+			            return $this->yylex();
+                    } elseif ($r === false) {
+                        $this->counter += strlen($this->value);
+                        $this->line += substr_count($this->value, "\n");
+                        if ($this->counter >= strlen($this->data)) {
+                            return false; // end of input
+                        }
+                        // skip this token
+                        continue;
+			        } else {
+	                    // accept
+	                    $this->counter += strlen($this->value);
+	                    $this->line += substr_count($this->value, "\n");
+	                    return true;
+			        }
+                }
+            } else {
+                throw new Exception('Unexpected input at line' . $this->line .
+                    ': ' . $this->data[$this->counter]);
+            }
+            break;
+        } while (true);
+
+    } // end function
+
+
+    const IN_FUNC = 2;
+    function yy_r2_1($yy_subpatterns)
+    {
+
+    return false; // skip this token
+    }
+    function yy_r2_2($yy_subpatterns)
+    {
+
+    self::showmsg("  IDENTIFIER: {$this->value}\n");
+    $this->token = OrigamiToken::IDENTIFIER;
+    $id = substr($this->value, 1);
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('var' => $id);
+    $this->func_stack[$ptr]['argc']++;
+    $this->identifiers[] = substr($this->value, 1);
+    }
+    function yy_r2_3($yy_subpatterns)
+    {
+
+    self::showmsg("  FUNCTION: {$this->value}\n");
+    self::showmsg("    subpatterns: {$yy_subpatterns}\n");
+    $this->token = OrigamiToken::WORD;
+    $this->function_pointer = substr($this->value, 0, -1);
+    $ptr = end($this->stack_ptr);
+    $i = array_push($this->func_stack, array('argc' => 0, 'argv' =>	array("function" => $this->function_pointer))) - 1;
+    $this->stack_ptr[] = $i;
+    $this->func_stack[$ptr]['argc']++;
+    $this->func_stack[$ptr]['argv'][] = array('ptr' => $i);
+    $this->yypushstate(self::IN_FUNC);
+    self::showmsg("  pushing: yystate = {$this->_yy_state}\n");
+    }
+    function yy_r2_4($yy_subpatterns)
+    {
+
+    self::showmsg("  STRING: {$this->value}\n");
+    $this->token = OrigamiToken::STRING;
+//    $this->yypushstate(self::IN_STRING);
+//    self::showmsg("  pushing: yystate = {$this->_yy_state}\n");
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('text' => substr($this->value, 1, -1));
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r2_7($yy_subpatterns)
+    {
+
+    self::showmsg("  NUMBER: {$this->value}\n");
+    $this->token = OrigamiToken::NUMBER;
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('number' => $this->value);
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r2_8($yy_subpatterns)
+    {
+
+    self::showmsg("  LPAREN: {$this->value}\n");
+    $this->token = OrigamiToken::LPAREN;
+    }
+    function yy_r2_9($yy_subpatterns)
+    {
+
+    self::showmsg("  RPAREN: {$this->value}\n");
+    $this->token = OrigamiToken::RPAREN;
+    $this->yypopstate();
+    array_pop($this->stack_ptr);
+    self::showmsg("  popping: yystate = {$this->_yy_state}\n");
+    }
+    function yy_r2_10($yy_subpatterns)
+    {
+
+    self::showmsg("  SEPARATOR: {$this->value}\n");
+    $this->token = OrigamiToken::SEPARATOR;
+    $ptr = end($this->stack_ptr);
+    }
+    function yy_r2_11($yy_subpatterns)
+    {
+
+    self::showmsg("  TRUE: {$this->value}\n");
+    $this->token = OrigamiToken::TRUE;
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('bool' => TRUE);
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r2_12($yy_subpatterns)
+    {
+
+    self::showmsg("  FALSE: {$this->value}\n");
+    $this->token = OrigamiToken::FALSE;
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('bool' => FALSE);
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r2_13($yy_subpatterns)
+    {
+
+    self::showmsg("  TEXTAREA_TYPE: {$this->value}\n");
+    $this->token = OrigamiToken::TEXTAREA_TYPE;
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('datatype' => 'TEXTAREA');
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r2_14($yy_subpatterns)
+    {
+
+    self::showmsg("  TEXT_TYPE: {$this->value}\n");
+    $this->token = OrigamiToken::TEXT_TYPE;
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('datatype' => 'TEXT');
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r2_15($yy_subpatterns)
+    {
+
+    self::showmsg("  INTEGER_TYPE: {$this->value}\n");
+    $this->token = OrigamiToken::INTEGER_TYPE;
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('datatype' => 'INTEGER');
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r2_16($yy_subpatterns)
+    {
+
+    self::showmsg("  TREE_TYPE: {$this->value}\n");
+    $this->token = OrigamiToken::TREE_TYPE;
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('datatype' => 'TREE');
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r2_17($yy_subpatterns)
+    {
+
+    self::showmsg("  WORD: {$this->value}\n");
+    $this->token = OrigamiToken::WORD;
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('text' => $this->value);
+    $this->func_stack[$ptr]['argc']++;
+    }
+    function yy_r2_18($yy_subpatterns)
+    {
+
+    self::showmsg("  CHAR: {$this->value}\n");
+    $this->token = OrigamiToken::CHAR;
+    $ptr = end($this->stack_ptr);
+    $this->func_stack[$ptr]['argv'][] = array('text' => $this->value);
+    $this->func_stack[$ptr]['argc']++;
+    }
+
+
+/* ************************************************************ */
+
+
+    function yylex3()
+    {
+        $tokenMap = array (
+              1 => 0,
+              2 => 0,
+              3 => 0,
+            );
+        if ($this->counter >= strlen($this->data)) {
+            return false; // end of input
+        }
+        $yy_global_pattern = "/^(:[_a-z0-9]+\\.?[_a-z0-9]*)|^(\")|^(.)/";
+
+        do {
+            if (preg_match($yy_global_pattern, substr($this->data, $this->counter), $yymatches)) {
+                $yysubmatches = $yymatches;
+                $yymatches = array_filter($yymatches, 'strlen'); // remove empty sub-patterns
+                if (!count($yymatches)) {
+                    throw new Exception('Error: lexing failed because a rule matched' .
+                        'an empty string.  Input "' . substr($this->data,
+                        $this->counter, 5) . '... state IN_STRING_NOTUSED');
+                }
+                next($yymatches); // skip global match
+                $this->token = key($yymatches); // token number
+                if ($tokenMap[$this->token]) {
+                    // extract sub-patterns for passing to lex function
+                    $yysubmatches = array_slice($yysubmatches, $this->token + 1,
+                        $tokenMap[$this->token]);
+                } else {
+                    $yysubmatches = array();
+                }
+                $this->value = current($yymatches); // token value
+                $r = $this->{'yy_r3_' . $this->token}($yysubmatches);
+                if ($r === null) {
+                    $this->counter += strlen($this->value);
+                    $this->line += substr_count($this->value, "\n");
+                    // accept this token
+                    return true;
+                } elseif ($r === true) {
+                    // we have changed state
+                    // process this token in the new state
+                    return $this->yylex();
+                } elseif ($r === false) {
+                    $this->counter += strlen($this->value);
+                    $this->line += substr_count($this->value, "\n");
+                    if ($this->counter >= strlen($this->data)) {
+                        return false; // end of input
+                    }
+                    // skip this token
+                    continue;
+                } else {                    $yy_yymore_patterns = array(
+        1 => array(0, "^(\")|^(.)"),
+        2 => array(0, "^(.)"),
+        3 => array(0, ""),
+    );
+
+                    // yymore is needed
+                    do {
+                        if (!strlen($yy_yymore_patterns[$this->token][1])) {
+                            throw new Exception('cannot do yymore for the last token');
+                        }
+                        $yysubmatches = array();
+                        if (preg_match('/' . $yy_yymore_patterns[$this->token][1] . '/',
+                              substr($this->data, $this->counter), $yymatches)) {
+                            $yysubmatches = $yymatches;
+                            $yymatches = array_filter($yymatches, 'strlen'); // remove empty sub-patterns
+                            next($yymatches); // skip global match
+                            $this->token += key($yymatches) + $yy_yymore_patterns[$this->token][0]; // token number
+                            $this->value = current($yymatches); // token value
+                            $this->line = substr_count($this->value, "\n");
+                            if ($tokenMap[$this->token]) {
+                                // extract sub-patterns for passing to lex function
+                                $yysubmatches = array_slice($yysubmatches, $this->token + 1,
+                                    $tokenMap[$this->token]);
+                            } else {
+                                $yysubmatches = array();
+                            }
+                        }
+                    	$r = $this->{'yy_r3_' . $this->token}($yysubmatches);
+                    } while ($r !== null && !is_bool($r));
+			        if ($r === true) {
+			            // we have changed state
+			            // process this token in the new state
+			            return $this->yylex();
+                    } elseif ($r === false) {
+                        $this->counter += strlen($this->value);
+                        $this->line += substr_count($this->value, "\n");
+                        if ($this->counter >= strlen($this->data)) {
+                            return false; // end of input
+                        }
+                        // skip this token
+                        continue;
+			        } else {
+	                    // accept
+	                    $this->counter += strlen($this->value);
+	                    $this->line += substr_count($this->value, "\n");
+	                    return true;
+			        }
+                }
+            } else {
+                throw new Exception('Unexpected input at line' . $this->line .
+                    ': ' . $this->data[$this->counter]);
+            }
+            break;
+        } while (true);
+
+    } // end function
+
+
+    const IN_STRING_NOTUSED = 3;
+    function yy_r3_1($yy_subpatterns)
+    {
+
+    self::showmsg("  IDENTIFIER: {$this->value}\n");
+    $this->token = OrigamiToken::IDENTIFIER;
+    $this->identifiers[] = substr($this->value, 1);
+    }
+    function yy_r3_2($yy_subpatterns)
+    {
+
+    $this->token = OrigamiToken::QUOTE;
+    $this->yypopstate();
+    self::showmsg("  popping: yystate = {$this->_yy_state}\n");
+    }
+    function yy_r3_3($yy_subpatterns)
+    {
+
+    self::showmsg("  CHAR: {$this->value}\n");
+    $this->token = OrigamiToken::CHAR;
+    }
+
+
+/* ************************************************************ */
+}
+
+/*
+$a = new OrigamiLexerComponent(':ident MULTIPLE(:m_ident "("CUT(:m_c_ident, 1, 3)")" blah "blah", 1)');
+//$a = new OrigamiLexerComponent(':ident1 FUNC(:ident3 "blah, blah", 3) :ident2');
+while($a->yylex() != false) {
+}
+
+echo "\nfuncname: " . $a->get_funcName();
+echo "\nargcount: " . $a->get_argCount();
+echo "\nArgs:\n";
+var_dump($a->get_args());
+echo "identifiers:\n";
+var_dump($a->get_identifiers());
+echo "Stack:\n";
+var_dump($a->get_funcStack());
+*/

@@ -1,0 +1,29 @@
+K 25
+svn:wc:ra_dav:version-url
+V 38
+/svn/origami/!svn/ver/14/trunk/doc/sql
+END
+origami_handystatements.sql
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/origami/!svn/ver/14/trunk/doc/sql/origami_handystatements.sql
+END
+origami_droptables.sql
+K 25
+svn:wc:ra_dav:version-url
+V 61
+/svn/origami/!svn/ver/14/trunk/doc/sql/origami_droptables.sql
+END
+origami_inserts.sql
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/origami/!svn/ver/14/trunk/doc/sql/origami_inserts.sql
+END
+origami_createdb.sql
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/origami/!svn/ver/14/trunk/doc/sql/origami_createdb.sql
+END

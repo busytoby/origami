@@ -1,0 +1,858 @@
+<?php
+/* SVN FILE: $Id: data_store.php 113 2009-11-18 17:43:14Z james.osborne $ */
+/**
+ * Origami Data Store Behaviour
+ *
+ * Origami(tm) :  CakePHP Data Management Framework
+ * Copyright 2007-2009, EAS Technologies LLC
+ * Licensed under The GNU Affero General Public License
+ * Redistributions of files must retain the above copyright notice.
+ *
+ * @filesource
+ * @copyright     Copyright 2007-2009, EAS Technologies LLC
+ * @link          http://thechaw.com/origami Origami(tm) Project
+ * @since         Origami(tm) v 0.8.9
+ * @version       $Revision: 113 $
+ * @modifiedby    $LastChangedBy: james.osborne $
+ * @lastmodified  $Date: 2009-11-18 12:43:14 -0500 (Wed, 18 Nov 2009) $
+ * @license       http://www.fsf.org/licensing/licenses/agpl-3.0.html The GNU Affero General Public License
+ */
+
+class DataStoreBehavior extends ModelBehavior {
+    var $settings = array();
+    var $shallow = false;
+    var $resetShallow = true;
+
+    /* The set of valid SQL operations usable in a WHERE statement
+     *
+     * @var array
+     */
+    var $__sqlOps = array('like', 'ilike', 'or', 'not', 'in', 'between', 'regexp', 'similar to');
+
+    /**
+     * Creates {$ModelAlias}Data model on the fly and attaches it with a hasMany
+     * relationship to the extended model
+     */
+    function setup(&$Model, $settings = array()) {
+        $default = array('schema' => $Model->schema());
+
+        // just to be nice
+        if(isset($settings['AlwaysLoadFields']) && !is_array($settings['AlwaysLoadFields']))
+            $settings['AlwaysLoadFields'] = array($settings['AlwaysLoadFields']);
+
+        $eavModelName = $Model->alias . 'Data';
+
+        $this->establishBindings($Model, $eavModelName);
+
+        // $with will contain the alias for the data model.  entity_id will be the foreign key
+        return($this->settings[$Model->alias] = am($default, array('with' => $eavModelName, 'withKey' => 'entity_id'), $settings));
+    }
+
+    function establishBindings(&$Model, $modelName = false) {
+        if (!$modelName) {
+            $modelName = $this->settings[$Model->name]['with'];
+        }
+
+        if (!isset($Model->hasMany[$modelName])) {
+            // if the model is not already in the class registry create it
+            if (!ClassRegistry::isKeySet(Inflector::tableize($modelName))) {
+                // if the calling model is 'User' creates a 'UserData' model using the eav_data table
+                $EavModel =& ClassRegistry::init(array('class' => 'AppModel', 'name' => $modelName, 'alias' => $modelName,'table' => 'eav_data'));
+            }
+
+            // bind the data to the model
+            $Model->bindModel(array('hasMany' => array($modelName => array('foreignKey' => 'entity_id'))), false);
+        }
+        if(!isset($Model->{$modelName}->belongsTo['Attribute'])) {
+            // Attribute and Datatype helper tables store the meaningful data
+            $Model->{$modelName}->bindModel(array('belongsTo' => array('Attribute')), false);
+        }
+        if(!isset($Model->{$modelName}->Attribute->belongsTo['Datatype'])) {
+            $Model->{$modelName}->Attribute->bindModel(array('belongsTo' => array('Datatype')), false);
+        }
+
+        if (isset($Model->{$modelName}->Attribute->belongsTo['Datatype'])) {
+            $eav_tables = $Model->{$modelName}->Attribute->Datatype->getEnumValues('table');
+
+            /**
+             * leetness .. add new data storage tables by creating
+             * eav_{$datatypes} and extend the 'table' enum in the
+             * 'datatypes' table.  Models will be created on the fly.
+             */
+            foreach($eav_tables as $eav_table) {
+                $eavModelName = 'Eav' . Inflector::camelize(strtolower($eav_table));
+
+                if(!isset($Model->{$modelName}->belongsTo[$eavModelName])) {
+                    $eavTableArray = array($eavModelName => array('foreignKey' => 'value_id'));
+                    $Model->{$modelName}->bindModel(array('belongsTo' => $eavTableArray), false);
+                }
+            }
+        }
+    }
+
+    /**
+     * Tells the model not to load any associated EAV data. Essentially disables
+     * this behavior.
+     *
+     * @params
+     *      load_shallow - should eav data be excluded from search results
+     *      reset_shallow - should the shallow setting automatically reset after the next find
+     *
+     * Does not currently affect beforeSave/beforeValidate/afterSave. Bad?
+     **/
+    function shallow( $load_shallow = true, $reset_shallow = true) {
+        $this->shallow = $load_shallow;
+        $this->resetShallow = $reset_shallow;
+    }
+
+    /*
+     * parseAndConditions
+     * Converts AND conditions for origami data into a condition based on entity id
+     * @params
+     *      Model - the model being queried on
+     *      origamiFields - the sub statements that contain origami data
+     *      attributeTableData - Information about the attributes being altered
+     *      conditionsType - string, type fo condition being performed
+     * @return
+     *      mixed - array of entity ids that match the conditions
+     *
+     * Note:  It is (based on tests that included both SQL time and processing time) one to two
+     * orders of magnitude faster to run one select per attribute, instead of creating one nested
+     * select statement to get the data in one call.
+     */
+    function parseAndConditions($Model, &$origamiFields, &$attributeTableData, $conditionType) {
+        $forCount = 0;
+        $entityIds = array();
+
+        foreach($attributeTableData as $attributeTable) {
+            $valueTableName = Inflector::pluralize('eav_' . strtolower($attributeTable['datatypes']['table']));
+            $selectStatement = 'SELECT DISTINCT ed.entity_id FROM eav_data AS ed ' .
+                               'LEFT JOIN ' . $valueTableName . ' AS ev1 ON ev1.id = ed.value_id AND ed.attribute_id = "' . $attributeTable['attributes']['id'] . '" ';
+            $whereSubClauses = array();
+
+            // Create a where sub clause for this origami value
+            foreach($origamiFields[$attributeTable['attributes']['name']] as $clauseData) {
+                $columnValue = $clauseData['value'];
+                $columnOperator = $clauseData['operator'];
+                $whereSubClauses[] = '(ev1.value ' . $columnOperator . ' ' . $columnValue . ' AND ed.attribute_id = "' . $attributeTable['attributes']['id'] . '") ';
+            }
+
+            $selectStatement = $selectStatement . ' WHERE ' . join(' '.$conditionType.' ', $whereSubClauses);
+            if ($forCount > 0)
+                $selectStatement = $selectStatement . ' AND ed.entity_id IN ("' . join('","', $entityIds) . '")';
+
+            $attributeResults = $Model->query($selectStatement);
+            $entityIds = array();
+            foreach($attributeResults as $entityId) {
+                $entityIds[] = $entityId['ed']['entity_id'];
+            }
+            $forCount++;
+        }
+
+        return $entityIds;
+    }
+
+    /*
+     * parseOrConditions
+     * Converts OR conditions for origami data into a condition based on entity id
+     * @params
+     *      Model - the model being queried on
+     *      origamiFields - the sub statements that contain origami data
+     *      attributeTableData - Information about the attributes being altered
+     *      conditionsType - string, type fo condition being performed
+     * @return
+     *      mixed - array of entity ids that match the conditions
+     */
+    function parseOrConditions($Model, &$origamiFields, &$attributeTableData, $conditionType) {
+        $tempTableName =  uniqid('EAV') . uniqid();
+        $createTempTable = 'CREATE TEMPORARY TABLE IF NOT EXISTS ' . $tempTableName . '(entity_id CHAR(36));';
+        $Model->query($createTempTable);
+
+        foreach($attributeTableData as $attributeTable) {
+            $valueTableName = Inflector::pluralize('eav_' . strtolower($attributeTable['datatypes']['table']));
+            $insertStatement = 'INSERT INTO ' . $tempTableName . ' SELECT DISTINCT ed.entity_id FROM eav_data AS ed ' .
+                               'LEFT JOIN ' . $valueTableName . ' AS ev1 ON ev1.id = ed.value_id AND ed.attribute_id = "' . $attributeTable['attributes']['id'] . '" ';
+            $whereSubClauses = array();
+
+            // Create a where sub clause for this origami value
+            foreach($origamiFields[$attributeTable['attributes']['name']] as $clauseData) {
+                $columnValue = $clauseData['value'];
+                $columnOperator = $clauseData['operator'];
+                $whereSubClauses[] = '(ev1.value ' . $columnOperator . ' ' . $columnValue . ' AND ed.attribute_id = "' . $attributeTable['attributes']['id'] . '") ';
+            }
+
+            $insertStatement = $insertStatement . ' WHERE ' . join(' '.$conditionType.' ', $whereSubClauses);
+            $Model->query($insertStatement);
+        }
+
+        $selectStatement = 'SELECT DISTINCT entity_id FROM ' . $tempTableName . ';';
+        $queryResults = $Model->query($selectStatement);
+        $dropTempTable = 'DROP TABLE IF EXISTS ' . $tempTableName . ';';
+        $Model->query($dropTempTable);
+
+        $entityIds = array();
+
+        foreach($queryResults as $entityId) {
+            $entityIds[] = $entityId[$tempTableName]['entity_id'];
+        }
+
+        return $entityIds;
+    }
+
+    /*
+     * convertOrigamiConditions
+     * Alters query conditions to handle origami data gracefully
+     * @params
+     *      Model - the model being queried on
+     *      db - a database connection
+     *      conditionsArray - array of conditions for processing
+     * @return
+     *      mixed - replacement array if array was altered
+     *      false - if no changes were made
+     */
+    function convertOrigamiConditions($Model, $db, &$conditionsArray, $conditionType = 'AND') {
+        $alteredConditionsArray = false;
+        $origamiFields = array();
+        $origamiColumns = array();
+
+        foreach($conditionsArray as $key => $val) {
+            // If key is numeric, or if key is a sql operator (AND, OR, etc), call this function recursively
+            $isSqlOperator = in_array(strtolower($key), $this->__sqlOps);
+            if (is_numeric($key) || $isSqlOperator) {
+                if ($isSqlOperator)
+                    $newConditionType = $key;
+                else
+                    $newConditionType = $conditionType;
+
+                $alteredArray = $this->convertOrigamiConditions($Model, $db, $val, $newConditionType);
+                if ($alteredArray) {
+                    $conditionsArray[$key] = $alteredArray;
+                    $alteredConditionsArray = true;
+                }
+                continue;
+            }
+
+            $clauseData = array();
+            $modelColumnData = array();
+            $on_clause = $db->conditionKeysToString(array($key => $val), true);
+
+            if (preg_match('/`(?P<model>[^` ]+)`\.`(?P<column>[^` ]+)/', $on_clause[0], $modelColumnData)) {
+                $modelName = $modelColumnData['model'];
+            } else {
+                $modelName = null;
+            }
+
+            preg_match('/`(?<key>[^` ]+) ?(?<like>LIKE)?` (?<operator>[^\b\'\d]+) (?<value>.+)$/', $on_clause[0], $clauseData);
+
+            if (!empty($clauseData) && $this->isOrigamiColumn($Model, $clauseData['key'], $modelName)) {
+                $origamiFields[$clauseData['key']][] = array(
+                    'operator' => $clauseData['operator'],
+                    'value' => $clauseData['value'],
+                    'condition_key' => $key
+                );
+                $origamiColumns[] = $clauseData['key'];
+                unset($conditionsArray[$key]);
+            }
+        }
+
+        // turn origami fields into attributes
+        if (!empty($origamiFields)) {
+            $attribute_names = array_values($origamiColumns);
+
+            // Get all of the attribute names and datatype tables so that we can build our query
+            $attributeQuery = 'SELECT attributes.id, attributes.name, datatypes.table FROM attributes LEFT JOIN datatypes ON datatypes.id = attributes.datatype_id WHERE attributes.name IN ("' . join('","', $attribute_names) . '");';
+            $attributeTableData = $Model->query($attributeQuery);
+
+            if(strcasecmp($conditionType, 'AND') == 0) {
+                $entityIds = $this->parseAndConditions($Model, $origamiFields, $attributeTableData, $conditionType);
+            } else {
+                $entityIds = $this->parseOrConditions($Model, $origamiFields, $attributeTableData, $conditionType);
+            }
+
+            // set entity_ids to replace origami items in $query
+            $entityIdCondition = array($Model->name . '.' . $Model->primaryKey => null);
+            if (!empty($entityIds)) {
+                $entityIdCondition = array($Model->name . '.' . $Model->primaryKey => $entityIds);
+            }
+
+            // this section fixes a bug where primary key conditions were being
+            // overwritten by the generated conditions.  We now add an AND level
+            // so that primary key conditions will be used as well, instead of
+            // being overwritten.
+            $primaryKeyColumn = $Model->name . '.' . $Model->primaryKey;
+            if(array_key_exists($primaryKeyColumn, $conditionsArray)) {
+                $conditionsArray['AND'][] = array($primaryKeyColumn => $conditionsArray[$primaryKeyColumn]);
+                unset($conditionsArray[$primaryKeyColumn]);
+            }
+
+            $conditionsArray['AND'][] = $entityIdCondition;
+            $alteredConditionsArray = true;
+        }
+
+        if ($alteredConditionsArray)
+            return $conditionsArray;
+        else
+            return false;
+    }
+
+    function beforeFind(&$Model, $query) {
+        if (is_array($query['conditions'])) {
+            $db =& ConnectionManager::getDataSource($Model->useDbConfig);
+            $replacementArray = $this->convertOrigamiConditions($Model, $db, $query['conditions']);
+
+            if ($replacementArray) {
+                $query['conditions'] = $replacementArray;
+
+                // Unbind the origami data before the actual query in order to improve performance
+                extract($this->settings[$Model->alias]);
+                $Model->schema(true);
+                $Model->unbindModel(array('hasMany' => array($with)));
+                return $query;
+            }
+        }
+
+        if (isset($query['list'])) {
+            $this->shallow(true);
+        }
+        // Unbind the origami data before the actual query in order to improve performance
+        extract($this->settings[$Model->alias]);
+        $Model->schema(true);
+        $Model->unbindModel(array('hasMany' => array($with)));
+        return true;
+    }
+
+    /**
+     * Extends the model's data set with additional fields from the data store
+     * if appropriate
+     */
+    function afterFind(&$Model, $results, $primary) {
+        $Model->_origami_schema = array();
+        extract($this->settings[$Model->alias]);
+        $required_fields = array();
+
+        if($this->shallow) {
+            if ($this->resetShallow) {
+                $this->shallow(false);
+            }
+
+            return($results);
+        }
+
+        $eav_tables = $Model->getEnumValues('table', 'datatypes');
+
+        foreach($results as $index => $data) {
+            if(isset($data[$Model->alias]['id'])) {
+                $model_id = $data[$Model->alias]['id'];
+
+                foreach($eav_tables as $eav_table) {
+                    $value_table = 'eav_' . strtolower(Inflector::pluralize($eav_table));
+
+                    switch($eav_table) {
+                      case 'FILE':
+                        $eav_query = "SELECT `a`.name, `a`.multiple, `e`.value_id FROM " .
+                            "(SELECT attribute_id, value_id from eav_data where entity_id = '$model_id') `e` " .
+                            "LEFT JOIN attributes `a` on `e`.attribute_id = `a`.id " .
+                            "LEFT JOIN datatypes `d` on `a`.datatype_id = `d`.id " .
+                            "WHERE `d`.table = '{$eav_table}'";
+
+                          $table_results = Set::combine($Model->query($eav_query), '{n}.e.value_id', '{n}.a.multiple', '{n}.a.name');
+                          break;
+                      default:
+                        $eav_query = "SELECT `a`.name, `a`.multiple, `v`.value, `v`.id FROM " .
+                            "(SELECT attribute_id, value_id from eav_data where entity_id = '$model_id') `e` " .
+                            "LEFT JOIN attributes `a` on `e`.attribute_id = `a`.id " .
+                            "LEFT JOIN datatypes `d` on `a`.datatype_id = `d`.id " .
+                            "LEFT JOIN $value_table `v` on `e`.value_id = `v`.id " .
+                            "WHERE `d`.table = '{$eav_table}'";
+
+                          $table_results = Set::combine($Model->query($eav_query), '{n}.v.value', '{n}.a.multiple', '{n}.a.name');
+                          break;
+                    }
+
+                    foreach($table_results as $key => $data_pair) {
+                        foreach($data_pair as $value => $multiple_ok) {
+                            if($key == 'profile_contact')
+                                $value = unserialize($value);
+
+                            if($multiple_ok) {
+                                $results[$index][$Model->alias][$key][] = $value;
+                            } else {
+                                $results[$index][$Model->alias][$key] = $value;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if($this->shallow && $this->resetShallow) {
+            $this->shallow(false);
+        }
+        // Uncomment this line to merge schemas so that default formatting can
+        // take place.  However we format all of the user inputs manually, and
+        // merging the schema at this point causes the database to issue warnings
+        // about missing fields if the origami datatype has not been defined yet.
+//        $Model->_schema = am($Model->_schema, $Model->_origami_schema);
+        return $results;
+    }
+
+    /**
+     * Fix the incoming data set prior to saving
+     * @todo Perform any necessary reformatting for storage here.
+     */
+    function beforeSave(&$Model) {
+        extract($this->settings[$Model->alias]);
+        $fields = array_diff_key($Model->data[$Model->alias], $schema);
+
+        // Reset schema to default for class..  needed so we don't try to save EAV fields directly to the parent model
+        $Model->schema(true);
+/*
+        foreach ($fields as $key => $val) {
+            // moved data fixer from here to beforeValidate
+        }
+*/
+        return true;
+    }
+
+    /**
+     * Validate EAV Data as needed
+     */
+    function beforeValidate(&$Model) {
+        extract($this->settings[$Model->alias]);
+        $fields = array_diff_key($Model->data[$Model->alias], $schema);
+
+        if(isset($Model->_origami_schema)) {
+            $Model->_schema = am($Model->_schema, $Model->_origami_schema);
+        }
+        $id = $Model->id;
+        $sAllGood = true;
+        $emptyFields = array();
+        //        debug(serialize(array('rule' => 'alphaNumeric', 'required' => true, 'allowEmpty' => 'true', 'message' => 'Letters and Numbers Only, Please')));
+
+        foreach ($fields as $key => $val) {
+            $validation_result = $this->validateValue($Model, $key, $val);
+
+            if ($validation_result === true) {
+                continue;
+            } else {
+                if(!array_key_exists($key, $Model->validate)) {
+                    // $Model->validate[$key] = $validation_array; // unsure what this means!
+                    $Model->invalidate($key, $validation_result);
+                }
+                $sAllGood = false;
+            }
+        }
+
+        // test for validation failures
+        if($sAllGood) {
+            // Reset the model schema to keep the database from issuing warnings about
+            // missing fields, when origami datatypes have not been defined yet.
+            $Model->schema(true);
+            return true;
+        }
+
+        // re-add empty fields to keep the form helper happy
+        $Model->data[$Model->alias] = am($Model->data[$Model->alias], $emptyFields);
+
+        // fail
+        return false;
+    }
+
+    function validateValue(&$Model, $key, $val) {
+        extract($this->settings[$Model->alias]);
+        $attribute = $this->getAttribute($Model, $key);
+
+        if(!$attribute) {
+            /**
+             * @todo enforce standardisation of the data set here
+             */
+            // this attribute does not exist yet. impossible to validate!
+            return true;
+        }
+
+        // gather info
+        $ValueModel = Inflector::camelize('eav_' . strtolower($attribute['Datatype']['table']));
+        $validation_array = unserialize($attribute['Datatype']['validation_proc']);
+
+        // format data correctly
+        $val = $this->formatData($this, $val, isset($attribute['Datatype']['format']) ? $attribute['Datatype']['format'] : 'default');
+
+        // If there is not a validation array then set the validation to be null
+        if (is_array($validation_array)) {
+            // prep for test
+            $Model->{$with}->{$ValueModel}->create();
+            $Model->{$with}->{$ValueModel}->set(array('value' => $val));
+            $Model->_schema[$key] = $Model->{$with}->{$ValueModel}->_schema['value'];
+            $Model->_schema[$key] = array_merge($Model->_schema[$key], array('origami' => true));
+
+            $Model->{$with}->{$ValueModel}->validate['value'] = $validation_array;
+            if($Model->{$with}->{$ValueModel}->validates()) {
+                $Model->{$with}->{$ValueModel}->validate = null;
+                return true;
+            } else {
+                $error = $Model->{$with}->{$ValueModel}->invalidFields();
+                return $error['value'];
+            }
+        } else { // no validation array, so we assume it's valid
+            $Model->{$with}->{$ValueModel}->validate = null;
+            return true;
+        }
+    }
+
+    /**
+     * Save all extraneous data to the Data Store
+     */
+    function afterSave(&$Model, $created) {
+        extract($this->settings[$Model->alias]);
+        $fields = array_diff_key($Model->data[$Model->alias], $schema);
+        $id = $Model->id;
+
+        foreach ($fields as $key => $val) {
+            // get any existing entry for this [Model][Attribute]
+            $eav = $Model->getEavField($id, $key);
+
+            if($eav) {
+                /**
+                 * life is easy if we already have an entry.
+                 * Just grab the attribute by id to find the storage table
+                 * and replace the old value
+                 */
+                $attribute_id = $eav[$with]['attribute_id'];
+                $Model->{$with}->Attribute->id = $attribute_id;
+
+                $datatype = $Model->getAttributeById($attribute_id);
+
+                $ValueModel = Inflector::camelize('eav_' . strtolower($datatype['Datatype']['table']));
+
+                $Model->{$with}->{$ValueModel}->create();
+
+                // format data correctly
+                $val = $this->formatData($this, $val, isset($datatype['Datatype']['format']) ? $datatype['Datatype']['format'] : $format = 'default');
+
+                switch($datatype['Datatype']['table']) {
+                  case 'FILE':
+                      // save filename in addition to data for files.
+                      $Model->{$with}->EavVarchar->save(array('id' => $eav[$with]['value_id'], 'value' => $val['type']));
+                      $val = $val['content'];
+                  default:
+                      $Model->{$with}->{$ValueModel}->save(array('id' => $eav[$with]['value_id'], 'value' => $val));
+                }
+            } else {
+                /**
+                 * If the eav entry does not already exist, we need to grab
+                 * some info about the attribute and datatype we're working with
+                 */
+                // When the following line was $attribute = $Model->getAttribute($key);
+                // getAttribute was not being called.
+                $attribute = $this->getAttribute($Model, $key);
+
+                if($attribute) {
+                    // if the attribute exists, we have everything we need
+                    $Model->{$with}->Attribute->id = $attribute['Attribute']['id'];
+                } else {
+                    /**
+                     * @todo Remove this 'else' block eventually to enforce
+                     * standardisation of the data set
+                     */
+
+                    // Otherwise create it with the 'Default' datatype
+                    $default_datatype = $Model->{$with}->Attribute->Datatype->find(
+                        'first',
+                        array(
+                            'conditions' => array(
+                                'name' => 'Default'
+                            ),
+                            'recursive' => -1
+                        )
+                    );
+
+                    if($default_datatype) {
+                        // Assuming the 'Default' datatype already exists
+                        $datatype_id = $default_datatype['Datatype']['id'];
+                    } else {
+                        // But we can create it if it doesn't
+                        $Model->{$with}->Attribute->Datatype->create();
+                        $default_datatype = $Model->{$with}->Attribute->Datatype->save(array('name' => 'Default'));
+                        $datatype_id = $Model->{$with}->Attribute->Datatype->id;
+                    }
+
+                    // Save the new attribute as type 'default'
+                    $Model->{$with}->Attribute->create();
+                    $attribute = $Model->{$with}->Attribute->save(
+                        array(
+                            'Attribute' => array(
+                                'datatype_id' => $datatype_id,
+                                'name' => $key
+                            )
+                        )
+                    );
+                    $attribute = am($attribute, $default_datatype);
+
+                }
+
+                $attribute_id = $Model->{$with}->Attribute->id;
+                $ValueModel = Inflector::camelize('eav_' . strtolower($attribute['Datatype']['table']));
+                $Model->{$with}->{$ValueModel}->create();
+
+                $val = $this->formatData($this, $val, isset($attribute['Datatype']['format']) ? $attribute['Datatype']['format'] : $format = 'default');
+
+                // Drop empty keys to avoid cluttering the db
+                if(empty($val) && $val != 0 && strlen($val) == 0) {
+                    continue;
+                }
+
+                switch($attribute['Datatype']['table']) {
+                  case 'FILE':
+                      // save filename in addition to data for files.
+                      if ($Model->{$with}->EavVarchar->save(array('value' => $val['type']))) {
+                          $value_id = $Model->{$with}->EavVarchar->id;
+                          $val = $val['content'];
+                          if (!$Model->{$with}->{$ValueModel}->save(array('id' => $value_id, 'value' => $val))) {
+                              throw new Exception('Failed to save data - ' . $key);
+                          }
+                      }
+                      break;
+                  default:
+                // save the value
+                      if ($Model->{$with}->{$ValueModel}->save(array('value' => $val))) {
+                          $value_id = $Model->{$with}->{$ValueModel}->id;
+                      } else {
+                          throw new Exception('Failed to save data - ' . $key);
+                      }
+                      break;
+                }
+
+                // save the eav relationship
+                $Model->{$with}->create(array('entity_id' => $id, 'attribute_id' => $attribute_id, 'value_id' => $value_id));
+                $Model->{$with}->save();
+            }
+        }
+    }
+
+    /**
+    * Determines if the column is part of the model, or if it is stored as origami data.
+    *
+    * @param mixed $Model The current Model (part of Behavior methods)
+    *        string $column The name of the column to test
+    *        string $modelName The name of the model to test against
+    * @return boolean true if this column is stored as origami data
+    *                 false if it is part of the model
+    * @access public
+    */
+    function isOrigamiColumn(&$Model, $column, $modelName = null) {
+        $testModel = $Model;
+
+        // If a column is passed with a . in it like "Users.address" then separate
+        // the name into model and column
+        if (stripos($column, '.')) {
+            list($modelName, $column) = explode('.', $column);
+        }
+
+        // If a modelName is specified then test against the specified model
+        if ($modelName) {
+            if (isset($testModel->name)) {
+                $currentModelName = $testModel->name;
+            } else {
+                $currentModelName = $modelName;
+            }
+            if ($currentModelName != $modelName) {
+                if (App::import('Model', $modelName)) {
+                    $testModel =& ClassRegistry::init($modelName);
+                } else {
+                    $testModel = false;
+                }
+            }
+        }
+
+        if (isset($testModel->_schema[$column]['origami'])) {
+            if ($testModel->_schema[$column]['origami']) {
+                return true;
+            }
+        } elseif (!isset($testModel->_schema[$column])) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+    * Returns the column type of an origami column in the model.
+    * The column type is really the type of data being displayed (ssn, phone, date, zip code, etc)
+    *
+    * @param string $column The name of the model column
+    * @return string Column type (null if no type is available)
+    * @access public
+    */
+    function getOrigamiColumnType(&$Model, $column) {
+        $attribute = $this->getAttribute($Model, $column);
+        if (isset($attribute['Datatype']['format']))
+            return $attribute['Datatype']['format'];
+        return null;
+    }
+
+    /**
+     * Get a value from the eav data store
+     *
+     * @param object $Model
+     * @param string $entity_id         - The entity to load the data for
+     * @param string $attribute_name    - the name of the data to load
+     */
+    function getEavValue($Model, $entity_id, $attribute_name) {
+        extract($this->settings[$Model->alias]);
+        $eavField = $this->getEavField($Model, $entity_id, $attribute_name);
+        if($eavField) {
+            $attribute_id = $eavField[$with]['attribute_id'];
+            $Model->{$with}->Attribute->id = $attribute_id;
+
+            $datatype = $Model->getAttributeById($attribute_id);
+            $ValueModel = Inflector::camelize('eav_' . strtolower($datatype['Datatype']['table']));
+
+            $eavValue = $Model->{$with}->{$ValueModel}->findById($eavField[$with]['value_id']);
+            if (isset($eavValue[$ValueModel]['value'])) {
+                return $eavValue[$ValueModel]['value'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Grab result set for a particular entity and attribute
+     */
+    function getEavField($Model, $entity_id = null, $attribute_name = null) {
+        extract($this->settings[$Model->alias]);
+        $eavField = $Model->{$with}->find(
+                    'first',
+                    array(
+                        'fields' => array(
+                            'id',
+                            'entity_id',
+                            'attribute_id',
+                            'value_id'
+                        ),
+                        'conditions' => array(
+                            'Attribute.name' => $attribute_name,
+                            $with . '.' . $withKey => $entity_id
+                        ),
+                        'recursive' => 0
+                    )
+                );
+        return ($eavField);
+    }
+
+    /**
+     * Grab Attribute Datatype info by id
+     */
+    function getAttributeById($Model, $attribute_id) {
+        extract($this->settings[$Model->alias]);
+
+        return ($Model->{$with}->Attribute->find(
+                    'first',
+                    array(
+                        'fields' => array(
+                            'Datatype.name',
+                            'Datatype.table',
+                            'Datatype.validation_proc',
+                            'Datatype.format',
+                            'Attribute.name'
+                        ),
+                        'conditions' => array(
+                            'Attribute.id' => $attribute_id,
+                        ),
+                        'recursive' => 0
+                    )
+                )
+        );
+    }
+
+    /**
+     * Grab Attribute Datatype info by name
+     */
+    function getAttribute($Model, $attribute_name) {
+        extract($this->settings[$Model->alias]);
+
+        return ($Model->{$with}->Attribute->find(
+                    'first',
+                    array(
+                        'fields' => array(
+                            'Datatype.name',
+                            'Datatype.table',
+                            'Datatype.validation_proc',
+                            'Datatype.format',
+                            'Attribute.name',
+                            'Attribute.id'
+                        ),
+                        'conditions' => array(
+                            'Attribute.name' => $attribute_name,
+                        ),
+                        'recursive' => 0
+                    )
+                )
+        );
+    }
+
+    function getFile($Model, $file_id) {
+        extract($this->settings[$Model->alias]);
+
+        $fileData = $Model->{$with}->EavFile->read(null, $file_id);
+        $fileName = $Model->{$with}->EavVarchar->read(null, $file_id);
+        return(array('type' => $fileName['EavVarchar']['value'], 'data' => $fileData['EavFile']['value']));
+    }
+
+    function getText($Model, $value_id) {
+        extract($this->settings[$Model->alias]);
+
+        $textData = $Model->{$with}->EavText->read(null, $value_id);
+        return($textData['EavText']['value']);
+    }
+
+    function formatData(&$Model, $value, $format = 'default') {
+        if(is_array($value)) {
+            switch ($format) {
+              case 'origami_ssn':
+              case 'origami_phone':
+              case 'origami_postal':
+                  return implode('-', $value);
+                  break;
+              case 'FILE':
+                  // force a hard filesize restriction
+                  if($value['size'] < 1572864) {
+                      $filename = $value['tmp_name'];
+                      $handle = fopen($filename, "rb");
+                      $contents = fread($handle, $value['size']);
+                      fclose($handle);
+                      $value = array('type' => $value['type'], 'content' => $contents);
+                  } else {
+                      $value = null;
+                  }
+                  break;
+              case 'origami_date':
+              case 'origami_time':
+              default:  // Default fixes dates to maintain backwards compatibility
+                  $date_indexes = array('hour', 'min', 'second', 'month', 'day', 'year');
+                  $mktime_args = array(0,0,0,1,1,0);
+                  $is_date = false;
+
+                  foreach ($date_indexes as $d_index => $d_key) {
+                      if (array_key_exists($d_key, $value) && $value[$d_key]) {
+                          $mktime_args[$d_index] = $value[$d_key];
+                          $is_date = true;
+                      }
+                  }
+
+                  if(!$is_date) return "";
+
+                  $ma = $mktime_args;
+
+                  $m_timestamp = mktime($ma[0], $ma[1], $ma[2], $ma[3], $ma[4], $ma[5]);
+                  $m_timestring = strftime("%Y%m%dT%H%M%S",$m_timestamp);
+
+                  return $m_timestring;
+                  break;
+            }
+        }
+
+        return $value;
+    }
+}
+?>

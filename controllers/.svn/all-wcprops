@@ -1,0 +1,23 @@
+K 25
+svn:wc:ra_dav:version-url
+V 43
+/svn/origami/!svn/ver/115/trunk/controllers
+END
+attributes_controller.php
+K 25
+svn:wc:ra_dav:version-url
+V 68
+/svn/origami/!svn/ver/13/trunk/controllers/attributes_controller.php
+END
+acts_as_controller.php
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/origami/!svn/ver/118/trunk/controllers/acts_as_controller.php
+END
+datatypes_controller.php
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/origami/!svn/ver/7/trunk/controllers/datatypes_controller.php
+END

@@ -1,0 +1,103 @@
+<?php
+
+/**
+ * Allow certain users (like administrators) to act as if they are another user.
+ * This is accomplished by altering the session such that they are effectively a different
+ * user.  Extending the ActsAs controller requires that you are using the Cake core Auth
+ * component, and the Origami Acl component.
+ *
+ * The Users controller that is extending the ActsAs controller must also implement a helper
+ * function named _setSessionVariables.  See below for the function definition and a code sample.
+ *
+ */
+class ActsAsController extends AppController {
+    var $name = 'ActsAs';
+
+	/**
+	 * Become - Alter the session such that you are now logged in as the user whos id is specified.
+	 *
+	 * @param mixed $id		- The ID of the user to "become"
+	 * @param string $base64EncodedRedirect - The url to send the user to, must be base64 encoded
+	 */
+	function become($id = null, $base64EncodedRedirect = false) {
+		if (!$id) {
+			$this->Session->setFlash(__('Invalid id for User', true), 'default', array('class' => 'errorMessage'));
+			$this->redirect('/');
+		}
+
+		$this->User->recursive = 0;
+		$originalUser = $this->User->findById($this->Auth->user('id'));
+		$this->Session->write('Admin.Unalias', $originalUser);
+		$sessionUserName = $this->_sessionLogin($id);
+		$this->Session->setFlash(__('You are acting as ' . $sessionUserName, true), 'default', array('class' => 'infoMessage'));
+		$aliasUser['User']['id'] = $id;
+		if ($base64EncodedRedirect) {
+			$this->redirect(base64_decode($base64EncodedRedirect));
+		} else {
+			$this->redirect($this->OrigamiAcl->redirect($aliasUser));
+		}
+	}
+
+	/**
+	 * Unbecome - Alter the session such that you are now logged in as your original user.
+	 *
+	 */
+	function unbecome() {
+		$returnToUserAccount = $this->Session->read('Admin.Unalias');
+		if($returnToUserAccount) {
+			$this->Session->write('Auth.User', $returnToUserAccount['User']);
+			$this->_setSessionVariables($returnToUserAccount);
+			$this->Session->delete('Admin');
+			$this->redirect($this->OrigamiAcl->redirect($returnToUserAccount));
+		} else {
+			$this->redirect($this->OrigamiAcl->redirect($this->Auth->user()));
+		}
+	}
+
+	/**
+	 * _sessionLogin - Set the session variables so that Auth thinks your are the specified user.
+	 *
+	 * @param mixed $id 	- The id of the user to be logged in as.
+	 * @return string 		- The display name of the user who is now logged in.
+	 */
+	function _sessionLogin($id) {
+		$this->User->recursive = 0;
+		$aliasUser = $this->User->findById($id);
+		$this->Session->write('Auth.User', $aliasUser['User']);
+		$userDisplayName = $this->_setSessionVariables($aliasUser);
+
+		return $userDisplayName;
+	}
+
+    /**
+     * _setSessionVariables - Sets any necessary session variables that the application expects.
+     * Also returns a display name for the user.
+     *
+     * @param array $user 	- An array of user data, should be the result of a call to <Model>->findById()
+     * @param mixed $id		- The id of the user.  This is only used if an empty array is passed to $user
+     * @return string		- The users "display name"
+     */
+	/*
+   	function _setSessionVariables($user, $id = false) {
+		if (empty($user)) {
+			$user = $this->User->findById($id);
+		}
+
+    	if (isset($user['UserData']['name'])) {
+    		$this->Session->write('User.name', $user['UserData']['name']);
+			$displayName = $user['UserData']['name'];
+    	} else {
+    		$this->Session->write('User.name', $user['User']['email']);
+			$displayName = $user['User']['email'];
+    	}
+    	$this->Session->write('User.endUser', $this->User->isUserEndUser($user['User']['id']));
+    	$this->Session->write('User.cra', $this->User->isUserCreditReportingAgency($user['User']['id']));
+    	$this->Session->write('User.docVerifier', $this->User->isUserDocumentVerifier($user['User']['id']));
+    	$this->Session->write('User.admin', $this->User->isUserAdministrator($user['User']['id']));
+    	$this->Session->write('User.webServices', $this->User->isUserWebServicesUser($user['User']['id']));
+
+ 		return $displayName;
+	}
+	*/
+}
+?>

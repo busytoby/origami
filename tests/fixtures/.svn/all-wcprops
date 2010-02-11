@@ -1,0 +1,35 @@
+K 25
+svn:wc:ra_dav:version-url
+V 46
+/svn/origami/!svn/ver/116/trunk/tests/fixtures
+END
+attribute_fixture.php
+K 25
+svn:wc:ra_dav:version-url
+V 67
+/svn/origami/!svn/ver/21/trunk/tests/fixtures/attribute_fixture.php
+END
+ods_user_fixture.php
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/origami/!svn/ver/21/trunk/tests/fixtures/ods_user_fixture.php
+END
+eav_data_fixture.php
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/origami/!svn/ver/21/trunk/tests/fixtures/eav_data_fixture.php
+END
+b_article_fixture.php
+K 25
+svn:wc:ra_dav:version-url
+V 68
+/svn/origami/!svn/ver/116/trunk/tests/fixtures/b_article_fixture.php
+END
+datatype_fixture.php
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/origami/!svn/ver/21/trunk/tests/fixtures/datatype_fixture.php
+END
